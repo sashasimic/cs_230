@@ -126,7 +126,7 @@ def main():
     results = trainer.evaluate(test_ds)
     
     logger.info("Saving model...")
-    trainer.save_model(f"models/{model_name}_final.h5")
+    trainer.save_model(f"models/{model_name}_final.keras")  # Changed from .h5 to .keras for Keras 3.x
     
     print("\n" + "="*80)
     print("TRAINING COMPLETE!")

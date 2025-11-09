@@ -1,0 +1,178 @@
+# Phase 2: Feature Engineering Configuration
+# This config defines how to transform raw OHLCV data into ML-ready features
+
+# Input/Output Configuration
+data:
+  # Input: raw parquet file from Phase 1
+  raw_data_path: 'data/raw/stocks_raw.parquet'
+  
+  # Output: processed train/val/test files
+  output_dir: 'data/processed'
+  output_format: 'parquet'  # 'parquet' or 'csv'
+
+# Input Features: Which tickers/columns to use as predictors
+input_features:
+  # List of tickers to use as input features
+  # If empty, uses all available tickers from raw data
+  tickers:
+    - SPY    # S&P 500 ETF
+    - QQQ    # Nasdaq 100 ETF
+    - IWM    # Russell 2000 ETF
+    - XLF    # Financials
+    - XLI    # Industrials
+    - XLY    # Consumer Discretionary
+    - XLK    # Technology
+    - XLE    # Energy
+    - XLB    # Materials
+    - XLP    # Consumer Staples
+    - XLV    # Healthcare
+    - XLU    # Utilities
+    - TLT    # 20+ Year Treasury
+    - IEF    # 7-10 Year Treasury
+    - GLD    # Gold
+    - DBC    # Commodities
+  
+  # Which OHLCV columns to use (for each ticker)
+  # Options: open, high, low, close, volume, vwap
+  columns:
+    - close  # Closing price (primary)
+    - volume # Trading volume
+  
+  # Technical indicators to compute (per ticker)
+  technical_indicators:
+    # Returns over different periods
+    returns:
+      enabled: true
+      periods: [1, 5, 21]  # 1-day, 1-week, 1-month
+    
+    # Log returns (more stable)
+    log_returns:
+      enabled: true
+      periods: [1, 5, 21]
+    
+    # Rolling volatility
+    volatility:
+      enabled: true
+      windows: [5, 21]  # 1-week, 1-month
+    
+    # Moving averages
+    moving_average:
+      enabled: true
+      windows: [5, 21, 63]  # 1-week, 1-month, 3-month
+      types: ['sma']  # 'sma' (simple) or 'ema' (exponential)
+    
+    # RSI (Relative Strength Index)
+    rsi:
+      enabled: true
+      period: 14
+    
+    # Momentum indicators
+    momentum:
+      enabled: true
+      periods: [5, 21]  # Price momentum over N days
+
+# Output Targets: What to predict
+output_targets:
+  # Multi-horizon prediction
+  horizons:
+    # 1-month forward return
+    - name: '1M'
+      periods: 21  # ~21 trading days = 1 month
+      weight: 0.5  # Weight in final target (if using weighted average)
+    
+    # 3-month forward return
+    - name: '3M'
+      periods: 63  # ~63 trading days = 3 months
+      weight: 0.3
+    
+    # 6-month forward return
+    - name: '6M'
+      periods: 126  # ~126 trading days = 6 months
+      weight: 0.2
+  
+  # Tickers to use for target calculation
+  # Can be single ticker or weighted average of multiple
+  target_tickers:
+    - ticker: SPY
+      weight: 0.6  # 60% weight
+    - ticker: QQQ
+      weight: 0.4  # 40% weight
+  
+  # Target type: 'returns' or 'log_returns'
+  target_type: 'returns'
+  
+  # Whether to create separate target columns per horizon
+  # If false, creates single weighted average target
+  separate_horizons: true
+
+# Feature Engineering Options
+feature_engineering:
+  # Remove highly correlated features
+  remove_correlated:
+    enabled: true
+    threshold: 0.95  # Remove if correlation > 0.95
+  
+  # Feature scaling
+  scaling:
+    method: 'standard'  # 'standard', 'minmax', 'robust', or 'none'
+    per_ticker: true  # Scale each ticker's features independently
+  
+  # Handle missing values
+  missing_values:
+    method: 'forward_fill'  # 'forward_fill', 'interpolate', 'drop'
+    max_gap: 5  # Drop rows with gaps > 5 days
+  
+  # Feature selection
+  feature_selection:
+    enabled: false
+    method: 'mutual_info'  # 'mutual_info', 'f_regression', or 'none'
+    top_k: 50  # Keep top K features
+
+# Sequence/Window Configuration
+sequences:
+  # Lookback window for LSTM/Transformer models
+  sequence_length: 30  # Use past 30 days to predict future
+  
+  # Whether to create sequences (for RNN models)
+  # Set to false for MLP models
+  create_sequences: true
+  
+  # Stride for creating sequences (1 = every day)
+  stride: 1
+
+# Train/Val/Test Split
+split:
+  # Split method: 'time' (chronological) or 'random'
+  method: 'time'
+  
+  # Split ratios (must sum to 1.0)
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+  
+  # For time-based split, optionally specify exact dates
+  # If not specified, uses ratios
+  dates:
+    train_end: null    # e.g., '2022-12-31'
+    val_end: null      # e.g., '2023-12-31'
+    # test goes until end of data
+  
+  # Minimum samples per split
+  min_samples:
+    train: 500
+    val: 100
+    test: 100
+
+# Data Quality Checks
+quality_checks:
+  # Drop rows with any missing values after preprocessing
+  drop_missing: true
+  
+  # Check for data leakage
+  check_leakage: true
+  
+  # Verify no future data in features
+  verify_no_lookahead: true
+  
+  # Report feature statistics
+  report_stats: true

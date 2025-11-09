@@ -42,7 +42,7 @@ def get_callbacks(config: Dict[str, Any], model_name: str) -> List[keras.callbac
         checkpoint_dir = logging_config.get('checkpoint_dir', 'checkpoints')
         os.makedirs(checkpoint_dir, exist_ok=True)
         
-        checkpoint_path = os.path.join(checkpoint_dir, f'{model_name}_best.h5')
+        checkpoint_path = os.path.join(checkpoint_dir, f'{model_name}_best.keras')  # Changed from .h5 to .keras for Keras 3.x
         cp_config = training_config['checkpointing']
         
         checkpoint = keras.callbacks.ModelCheckpoint(
@@ -98,7 +98,7 @@ def get_callbacks(config: Dict[str, Any], model_name: str) -> List[keras.callbac
         
         tensorboard = keras.callbacks.TensorBoard(
             log_dir=tensorboard_dir,
-            update_freq='epoch',
+            update_freq='batch',  # Changed from 'epoch' for Keras 3.x compatibility
             profile_batch=0
         )
         callbacks.append(tensorboard)

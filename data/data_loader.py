@@ -104,10 +104,12 @@ class DataLoader:
         # Auto-detect feature columns if not specified
         if not self.feature_columns:
             # Exclude targets and timestamp from features
-            exclude_cols = self.target_columns + [self.data_config['features'].get('timestamp_column', 'timestamp')]
+            timestamp_col = self.data_config['features'].get('timestamp_column', 'timestamp')
+            exclude_cols = self.target_columns + [timestamp_col, 'date', 'timestamp']  # Cover all date column names
+            # Only select numeric columns that aren't in exclude list
             self.feature_columns = [
                 col for col in df.columns 
-                if col not in exclude_cols
+                if col not in exclude_cols and pd.api.types.is_numeric_dtype(df[col])
             ]
         
         # Extract features and targets
@@ -163,10 +165,12 @@ class DataLoader:
         # Auto-detect feature columns if not specified
         if not self.feature_columns:
             # Exclude targets and timestamp from features
-            exclude_cols = self.target_columns + [self.data_config['features'].get('timestamp_column', 'timestamp')]
+            timestamp_col = self.data_config['features'].get('timestamp_column', 'timestamp')
+            exclude_cols = self.target_columns + [timestamp_col, 'date', 'timestamp']  # Cover all date column names
+            # Only select numeric columns that aren't in exclude list
             self.feature_columns = [
                 col for col in df.columns 
-                if col not in exclude_cols
+                if col not in exclude_cols and pd.api.types.is_numeric_dtype(df[col])
             ]
         
         # Extract features and targets
@@ -226,6 +230,18 @@ class DataLoader:
         """
         preprocessing_config = self.data_config['preprocessing']
         normalization = preprocessing_config['normalization']
+        
+        # Handle NaN values by filling with column means (only for features)
+        if np.isnan(X).any():
+            if fit:
+                # Store column means for filling NaNs
+                self.fill_values_X = np.nanmean(X, axis=0)
+            # Fill NaNs with stored means
+            mask = np.isnan(X)
+            X = X.copy()
+            for col_idx in range(X.shape[1]):
+                if mask[:, col_idx].any():
+                    X[mask[:, col_idx], col_idx] = self.fill_values_X[col_idx]
         
         if normalization == 'standard':
             if fit or not hasattr(self, 'mean_X'):

@@ -59,29 +59,58 @@ class Trainer:
         self._compile_model()
         
         # Print model summary
-        logger.info("\nModel Summary:")
-        self.model.summary(print_fn=logger.info)
+        # Temporarily disabled for Keras 3.x compatibility testing
+        # logger.info("\nModel Summary:")
+        # self.model.summary(print_fn=logger.info)
     
     def _compile_model(self):
         """Compile model with optimizer and loss."""
         training_config = self.config['training']
         
-        # Get optimizer
-        optimizer = self._get_optimizer(training_config)
+        # Use string-based compilation for Keras 3.x compatibility
+        optimizer_name = training_config['optimizer']
+        loss_name = training_config['loss']
         
-        # Get loss
-        loss = self._get_loss(training_config['loss'])
+        # Build optimizer with params
+        if optimizer_name == 'adam':
+            params = training_config['optimizer_params']['adam']
+            optimizer = keras.optimizers.Adam(
+                learning_rate=training_config['learning_rate'],
+                beta_1=params['beta_1'],
+                beta_2=params['beta_2'],
+                epsilon=float(params['epsilon'])  # Convert to float in case it's a string
+            )
+        elif optimizer_name == 'sgd':
+            params = training_config['optimizer_params']['sgd']
+            optimizer = keras.optimizers.SGD(
+                learning_rate=training_config['learning_rate'],
+                momentum=params['momentum'],
+                nesterov=params['nesterov']
+            )
+        elif optimizer_name == 'rmsprop':
+            optimizer = keras.optimizers.RMSprop(learning_rate=training_config['learning_rate'])
+        else:
+            optimizer = optimizer_name  # Use string as fallback
         
-        # Get metrics
-        metrics = self._get_metrics(training_config['metrics'])
+        # Build metrics list - Keras 2.15 doesn't support rmse as string
+        metrics = []
+        for metric_name in training_config['metrics']:
+            if metric_name == 'mae':
+                metrics.append('mae')
+            elif metric_name == 'mse':
+                metrics.append('mse')
+            elif metric_name == 'rmse':
+                metrics.append(keras.metrics.RootMeanSquaredError(name='rmse'))
+            else:
+                metrics.append(metric_name)
         
         self.model.compile(
             optimizer=optimizer,
-            loss=loss,
+            loss=loss_name,
             metrics=metrics
         )
         
-        logger.info(f"Model compiled with optimizer={training_config['optimizer']}, loss={training_config['loss']}")
+        logger.info(f"Model compiled with optimizer={optimizer_name}, loss={loss_name}")
     
     def _get_optimizer(self, training_config: Dict[str, Any]) -> keras.optimizers.Optimizer:
         """Get optimizer from config."""
@@ -124,11 +153,11 @@ class Trainer:
         metrics = []
         for name in metric_names:
             if name == 'mae':
-                metrics.append(keras.metrics.MeanAbsoluteError(name='mae'))
+                metrics.append(keras.metrics.MeanAbsoluteError())  # Remove name parameter for Keras 3.x
             elif name == 'mse':
-                metrics.append(keras.metrics.MeanSquaredError(name='mse'))
+                metrics.append(keras.metrics.MeanSquaredError())
             elif name == 'rmse':
-                metrics.append(keras.metrics.RootMeanSquaredError(name='rmse'))
+                metrics.append(keras.metrics.RootMeanSquaredError())
         return metrics
     
     def train(

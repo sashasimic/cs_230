@@ -489,220 +489,90 @@ docker-compose up tensorboard
 
 ## 📖 Usage
 
-### Phase 1: Extract Data from BigQuery
-
-**Extract real stock/index data from your BigQuery table:**
-
-#### Prerequisites:
-- GCP setup completed (see [GCP Setup](#google-cloud-platform-gcp-setup))
-- BigQuery table with OHLCV data
-- Tickers configured in `configs/tickers.yaml`
-
-#### Check Data Availability (Recommended First Step):
-
-Before extracting data, verify which tickers have data and their date ranges:
+### Quick Start Workflow
 
 ```bash
-# Check all 40 tickers in config
-python scripts/extract_tickers_from_bigquery.py --check-availability
+# Phase 1: Extract data from BigQuery
+python scripts/01_extract/extract_from_bigquery.py --check-availability
+python scripts/01_extract/extract_from_bigquery.py
 
-# Check specific tickers only
-python scripts/extract_tickers_from_bigquery.py --check-availability --tickers SPY QQQ IWM
+# Phase 2: Build features
+python scripts/02_features/build_features.py
+python scripts/02_features/verify_features.py
+
+# Phase 3: Train models (coming soon)
+python train.py --model-type lstm
 ```
 
-**Output Example:**
-
-```
-================================================================================
-DATA AVAILABILITY CHECK
-================================================================================
-Checking 40 tickers in: your-project.stock_data.stock_ohlcv
-================================================================================
-
-Ticker     Start Date   End Date     Days     Span     Coverage  
-================================================================================
-BIL        2007-05-30   2024-11-08   4400     6371     69.1%     
-BNO        2010-06-02   2024-11-08   3615     5273     68.5%     
-CPER       2011-11-15   2024-11-08   3267     4742     68.9%     
-DBA        2007-01-05   2024-11-08   4489     6516     68.9%     
-DBC        2006-02-03   2024-11-08   4724     6853     68.9%     
-EMB        2007-12-17   2024-11-08   4267     6170     69.1%     
-FXE        2005-12-08   2024-11-08   4764     6910     68.9%     
-GLD        2004-11-18   2024-11-08   5028     7295     68.9%     
-...
-
-Summary:
-  Total tickers found: 38
-  Missing tickers: 2
-  Average trading days: 3,847
-  Min start date: 2004-11-18
-  Max end date: 2024-11-08
-  Average coverage: 68.7%
-
-⚠️  Missing tickers (no data found): MOVE, XYZ
-
-⚠️  Tickers with <70% coverage:
-    BIL: 69.1% (4400 days)
-    BNO: 68.5% (3615 days)
-================================================================================
-```
-
-**What it shows:**
-- **Start Date**: First available data point
-- **End Date**: Last available data point
-- **Days**: Number of trading days with data
-- **Span**: Total calendar days between start and end
-- **Coverage**: % of calendar days with data (accounts for weekends/holidays)
-
-**Use this to:**
-- Identify missing tickers
-- Find tickers with limited history
-- Determine common date range for all tickers
-- Spot data quality issues
-
-#### Verify Extracted Data:
-
-```bash
-# Run verification script
-python scripts/verify_raw_stocks_data.py
-
-# Verify specific ticker
-python scripts/verify_raw_stocks_data.py --ticker XLU
-
-# Verify custom file
-python scripts/verify_raw_stocks_data.py --file data/raw/my_data.parquet
-```
-
-#### Manage Tickers:
-
-**Edit config file** (`configs/tickers.yaml`):
-
-```yaml
-tickers:
-  - AAPL
-  - MSFT
-  - GOOGL
-  # Add more tickers here
-```
-
-**Or use command-line:**
-
-```bash
-# Add new tickers and save to config
-python scripts/extract_tickers_from_bigquery.py \
-  --add-tickers TSLA NVDA \
-  --save-config
-
-# Remove specific tickers
-python scripts/extract_tickers_from_bigquery.py \
-  --remove-tickers VIX \
-  --save-config
-
-# Replace entire ticker list
-python scripts/extract_tickers_from_bigquery.py \
-  --replace-tickers AAPL MSFT GOOGL AMZN \
-  --save-config
-
-# One-time override (don't update config)
-python scripts/extract_tickers_from_bigquery.py \
-  --tickers AAPL MSFT GOOGL
-```
-
-#### Custom Date Ranges:
-
-```bash
-# Extract specific date range
-python scripts/extract_tickers_from_bigquery.py \
-  --start-date 2020-01-01 \
-  --end-date 2023-12-31
-
-# Extract last 2 years only
-python scripts/extract_tickers_from_bigquery.py \
-  --start-date 2022-01-01
-```
-
-#### Advanced Options:
-
-```bash
-# Force refresh (re-download even if file exists)
-python scripts/extract_tickers_from_bigquery.py --force
-
-# Custom output location
-python scripts/extract_tickers_from_bigquery.py \
-  --output data/raw/my_stocks.parquet
-
-# Use different config file
-python scripts/extract_tickers_from_bigquery.py \
-  --config configs/tickers_tech.yaml
-```
-
-#### Output Format:
-
-**Wide-format Parquet file** - one row per date, columns for each ticker:
-
-```
-date       | AAPL_open | AAPL_high | AAPL_low | AAPL_close | AAPL_volume | MSFT_open | MSFT_high | ...
------------|-----------|-----------|---------  |------------|-------------|-----------|-----------|----
-2023-01-01 | 130.50    | 132.20    | 129.80   | 131.00     | 100.5M      | 240.10    | 242.50    | ...
-2023-01-02 | 131.20    | 133.40    | 130.50   | 132.10     | 95.2M       | 241.00    | 243.20    | ...
-```
-
-**Features:**
-- ✅ Handles missing dates (holidays, weekends)
-- ✅ Forward-fills gaps
-- ✅ Compressed Parquet format (10-50 MB for 10 years)
-- ✅ Ready for Phase 2 (feature engineering)
-
-#### Example Workflow:
-
-```bash
-# 1. Configure your tickers
-vim configs/tickers.yaml
-
-# 2. Check data availability (verify all tickers exist)
-python scripts/extract_tickers_from_bigquery.py --check-availability
-# Review output, remove missing tickers if needed
-
-# 3. Extract from BigQuery (one-time, ~1-2 minutes)
-python scripts/extract_tickers_from_bigquery.py
-
-# 4. Verify extraction
-ls -lh data/raw/stocks_raw.parquet
-
-# 5. Inspect data
-python -c "import pandas as pd; df = pd.read_parquet('data/raw/stocks_raw.parquet'); print(df.head()); print(df.info())"
-
-# 6. Ready for Phase 2 feature engineering!
-```
+**📚 For detailed usage of each script, see [scripts/README.md](scripts/README.md)**
 
 ---
 
-### Data Generation (Synthetic)
+### Phase 1: Extract Data from BigQuery
 
-**Generate synthetic time series data for testing:**
+**Extract real stock/index data from your BigQuery table.**
 
 ```bash
-# Default: 10,000 samples, 10 features, 70/15/15 split
-python scripts/generate_data.py
+# Check data availability first
+python scripts/01_extract/extract_from_bigquery.py --check-availability
 
-# Custom sample size and features
-python scripts/generate_data.py --n-samples 50000 --n-features 20
+# Extract all configured tickers
+python scripts/01_extract/extract_from_bigquery.py
 
-# Custom train/val/test split (80/10/10)
-python scripts/generate_data.py \
-  --n-samples 10000 \
-  --train-ratio 0.8 \
-  --val-ratio 0.1
-
-# Custom split (60/20/20)
-python scripts/generate_data.py \
-  --n-samples 10000 \
-  --train-ratio 0.6 \
-  --val-ratio 0.2
-
-# With shuffling (breaks temporal order - not recommended for time series)
-python scripts/generate_data.py --n-samples 10000 --shuffle
+# Verify extraction
+python scripts/01_extract/verify_extraction.py
 ```
+
+**Output:** `data/raw/stocks_raw.parquet` - Wide-format parquet with one row per date, columns for each ticker's OHLCV data.
+
+**📚 For detailed options (ticker management, custom dates, verification), see [scripts/README.md](scripts/README.md#phase-1-data-extraction)**
+
+---
+
+### Phase 2: Feature Engineering
+
+**Transform raw OHLCV data into ML-ready features with technical indicators and multi-horizon targets.**
+
+```bash
+# Build features with default config
+python scripts/02_features/build_features.py
+
+# Verify processed data
+python scripts/02_features/verify_features.py
+```
+
+**Output:**
+- `data/processed/train.parquet` - Training set
+- `data/processed/val.parquet` - Validation set  
+- `data/processed/test.parquet` - Test set
+- `data/processed/scaler.pkl` - Fitted scalers
+- `data/processed/feature_names.txt` - Feature list
+
+**Features Created:**
+- Technical indicators: Returns, Volatility, Moving Averages, RSI, Momentum
+- Multi-horizon targets: 1M, 3M, 6M forward returns
+- Weighted target: Configurable ticker weights (default: 60% SPY + 40% QQQ)
+- ~300+ features → ~160 after correlation removal
+
+**Configuration:** Edit `configs/features.yaml` to customize input tickers, technical indicators, target horizons, and feature engineering options.
+
+**📚 For detailed configuration options, see [scripts/README.md](scripts/README.md#phase-2-feature-engineering)**
+
+---
+
+### Dummy Data Generation
+
+**Generate synthetic time series data for testing without BigQuery access:**
+
+```bash
+# Generate dummy dataset
+python scripts/dummy/generate_dummy_data.py
+
+# Custom configuration
+python scripts/dummy/generate_dummy_data.py --n-samples 50000 --n-features 20
+```
+
+**📚 For detailed options, see [scripts/README.md](scripts/README.md#dummy-data-generation)**
 
 **Output files:**
 - `data/dummy/train.csv` - Training set (default: 70%)

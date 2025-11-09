@@ -7,10 +7,10 @@ data:
   
   # Local data settings
   local:
-    train_path: 'data/dummy/train.csv'
-    val_path: 'data/dummy/val.csv'
-    test_path: 'data/dummy/test.csv'
-    format: 'csv'  # 'csv' or 'parquet'
+    train_path: 'data/processed/train.parquet'
+    val_path: 'data/processed/val.parquet'
+    test_path: 'data/processed/test.parquet'
+    format: 'parquet'  # 'csv' or 'parquet'
   
   # BigQuery settings
   bigquery:
@@ -31,9 +31,9 @@ data:
   # Feature configuration
   features:
     sequence_length: 30  # Number of time steps to look back
-    feature_columns: []  # Empty for dummy data, will be auto-detected
-    target_column: 'target'
-    timestamp_column: 'timestamp'
+    feature_columns: []  # Empty = auto-detect from data
+    target_column: 'target_1M'  # Options: 'target_1M', 'target_3M', 'target_6M'
+    timestamp_column: 'date'  # Changed from 'timestamp' to 'date'
   
   # Preprocessing
   preprocessing:

@@ -1,5 +1,5 @@
-tensorflow>=2.13.0
-numpy>=1.24.0
+tensorflow==2.15.0  # Use 2.15 with built-in Keras 2.x (Keras 3.x has unfixable dtype issues)
+numpy>=1.24.0,<2.0  # Pin to <2.0 for compatibility
 pandas>=2.0.0
 matplotlib>=3.7.0
 pyyaml>=6.0
@@ -7,3 +7,5 @@ google-cloud-bigquery>=3.11.0
 google-cloud-storage>=2.10.0
 pyarrow>=12.0.0
 db-dtypes>=1.1.0  # Required for BigQuery DATE/TIMESTAMP columns
+scikit-learn>=1.3.0  # Feature engineering and preprocessing
+joblib>=1.3.0  # Save/load scalers and models

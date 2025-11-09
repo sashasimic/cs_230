@@ -8,7 +8,11 @@ def __getattr__(name):
         from .data_loader import DataLoader
         return DataLoader
     elif name == 'generate_dummy_data':
-        from .dummy_generator import generate_dummy_data
+        # Import from scripts.dummy since we moved dummy_generator there
+        import sys
+        import os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+        from scripts.dummy.dummy_generator import generate_dummy_data
         return generate_dummy_data
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

@@ -11,8 +11,8 @@ import sys
 import argparse
 import pandas as pd
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Add project root to path (two levels up from scripts/01_extract/)
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from utils.logger import setup_logger
 
