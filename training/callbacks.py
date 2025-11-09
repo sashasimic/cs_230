@@ -39,7 +39,7 @@ def get_callbacks(config: Dict[str, Any], model_name: str) -> List[keras.callbac
     
     # Model checkpointing
     if training_config['checkpointing']['enabled']:
-        checkpoint_dir = logging_config['checkpoint_dir']
+        checkpoint_dir = logging_config.get('checkpoint_dir', 'checkpoints')
         os.makedirs(checkpoint_dir, exist_ok=True)
         
         checkpoint_path = os.path.join(checkpoint_dir, f'{model_name}_best.h5')
@@ -56,8 +56,9 @@ def get_callbacks(config: Dict[str, Any], model_name: str) -> List[keras.callbac
         logger.info(f"Added checkpointing: {checkpoint_path}")
     
     # Learning rate scheduling
-    if training_config['lr_schedule']['enabled']:
-        lr_config = training_config['lr_schedule']
+    lr_schedule_config = training_config.get('learning_rate_schedule', {})
+    if lr_schedule_config.get('enabled', False):
+        lr_config = lr_schedule_config
         
         if lr_config['type'] == 'reduce_on_plateau':
             lr_scheduler = keras.callbacks.ReduceLROnPlateau(
@@ -83,21 +84,28 @@ def get_callbacks(config: Dict[str, Any], model_name: str) -> List[keras.callbac
             pass
     
     # TensorBoard
-    if logging_config['tensorboard']['enabled']:
-        tb_config = logging_config['tensorboard']
-        tensorboard_dir = os.path.join(tb_config['log_dir'], model_name)
+    tensorboard_config = logging_config.get('tensorboard', False)
+    if isinstance(tensorboard_config, bool):
+        tensorboard_enabled = tensorboard_config
+        tb_log_dir = logging_config.get('log_dir', 'logs')
+    else:
+        tensorboard_enabled = tensorboard_config.get('enabled', False)
+        tb_log_dir = tensorboard_config.get('log_dir', 'logs/tensorboard')
+    
+    if tensorboard_enabled:
+        tensorboard_dir = os.path.join(tb_log_dir, model_name)
         os.makedirs(tensorboard_dir, exist_ok=True)
         
         tensorboard = keras.callbacks.TensorBoard(
             log_dir=tensorboard_dir,
-            update_freq=tb_config['update_freq'],
-            profile_batch=tb_config['profile_batch']
+            update_freq='epoch',
+            profile_batch=0
         )
         callbacks.append(tensorboard)
         logger.info(f"Added TensorBoard: {tensorboard_dir}")
     
     # CSV logger
-    metrics_dir = logging_config['metrics_dir']
+    metrics_dir = logging_config.get('metrics_dir', 'logs/metrics')
     os.makedirs(metrics_dir, exist_ok=True)
     csv_path = os.path.join(metrics_dir, f'{model_name}_metrics.csv')
     csv_logger = keras.callbacks.CSVLogger(csv_path)

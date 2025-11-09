@@ -79,7 +79,7 @@ training:
     adam:
       beta_1: 0.9
       beta_2: 0.999
-      epsilon: 0.0000001
+      epsilon: 1e-07
     sgd:
       momentum: 0.9
       nesterov: true

@@ -42,29 +42,46 @@ class ModelFactory:
     
     @staticmethod
     def _create_mlp(input_shape: tuple, config: Dict[str, Any]) -> keras.Model:
-        """Create MLP model."""
+        """
+        Create MLP model for multi-horizon forecasting.
+        
+        Architecture:
+        Input(seq_len, n_features) → Flatten(seq_len*n_features) →
+        Dense(64, ReLU) → Dropout(0.2) →
+        Dense(32, ReLU) → Dropout(0.2) →
+        Dense(output_horizons, linear)
+        
+        For multi-horizon: output_horizons=3 gives [1M, 3M, 6M] predictions
+        """
         model_config = config['model']
         mlp_config = model_config['mlp']
         
-        inputs = layers.Input(shape=input_shape)
+        # Get output dimension (1 for single, 3 for multi-horizon)
+        output_horizons = mlp_config.get('output_horizons', 1)
         
-        # Flatten time series
+        inputs = layers.Input(shape=input_shape, name='input')
+        
+        # Flatten time series (seq_len * n_features)
         x = layers.Flatten()(inputs)
         
-        # Hidden layers
-        for dim in mlp_config['layer_dims']:
+        # Hidden layers with dropout
+        for i, dim in enumerate(mlp_config['layer_dims']):
             x = layers.Dense(
                 dim,
-                activation=model_config['activation']
+                activation=model_config['activation'],
+                name=f'dense_{i+1}'
             )(x)
-            x = layers.Dropout(model_config['dropout'])(x)
+            x = layers.Dropout(model_config['dropout'], name=f'dropout_{i+1}')(x)
         
-        # Output layer
-        outputs = layers.Dense(1)(x)
+        # Output layer: linear activation for regression
+        outputs = layers.Dense(output_horizons, activation='linear', name='output')(x)
         
         model = keras.Model(inputs=inputs, outputs=outputs, name='MLP')
         
-        logger.info(f"MLP model created with {model.count_params()} parameters")
+        logger.info(
+            f"MLP model created: hidden={mlp_config['layer_dims']}, "
+            f"output_horizons={output_horizons}, params={model.count_params():,}"
+        )
         
         return model
     

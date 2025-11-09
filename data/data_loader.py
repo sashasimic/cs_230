@@ -40,8 +40,21 @@ class DataLoader:
             )
         
         self.feature_columns = self.data_config['features']['feature_columns']
-        self.target_column = self.data_config['features']['target_column']
         self.sequence_length = self.data_config['features']['sequence_length']
+        
+        # Handle multi-horizon vs single target
+        horizons_config = self.data_config.get('horizons', {})
+        self.multi_horizon = horizons_config.get('enabled', False)
+        
+        if self.multi_horizon:
+            self.target_columns = horizons_config.get('targets', [])
+            if not self.target_columns:
+                raise ValueError("Multi-horizon enabled but no target columns specified")
+            logger.info(f"Multi-horizon mode: {len(self.target_columns)} targets - {self.target_columns}")
+        else:
+            self.target_column = self.data_config['features'].get('target_column', 'target')
+            self.target_columns = [self.target_column]
+            logger.info(f"Single target mode: {self.target_column}")
     
     def load_data(
         self,
@@ -90,16 +103,24 @@ class DataLoader:
         
         # Auto-detect feature columns if not specified
         if not self.feature_columns:
+            # Exclude targets and timestamp from features
+            exclude_cols = self.target_columns + [self.data_config['features'].get('timestamp_column', 'timestamp')]
             self.feature_columns = [
                 col for col in df.columns 
-                if col not in [self.target_column, self.data_config['features']['timestamp_column']]
+                if col not in exclude_cols
             ]
         
-        # Extract features and target
+        # Extract features and targets
         X = df[self.feature_columns].values
-        y = df[self.target_column].values
         
-        logger.info(f"Loaded {len(df)} samples with {len(self.feature_columns)} features")
+        # Handle multi-horizon or single target
+        if self.multi_horizon:
+            y = df[self.target_columns].values  # Shape: (n_samples, n_horizons)
+            logger.info(f"Loaded {len(df)} samples with {len(self.feature_columns)} features, "
+                       f"{len(self.target_columns)} target horizons")
+        else:
+            y = df[self.target_columns[0]].values  # Shape: (n_samples,)
+            logger.info(f"Loaded {len(df)} samples with {len(self.feature_columns)} features")
         
         return X, y
     
@@ -141,16 +162,24 @@ class DataLoader:
         
         # Auto-detect feature columns if not specified
         if not self.feature_columns:
+            # Exclude targets and timestamp from features
+            exclude_cols = self.target_columns + [self.data_config['features'].get('timestamp_column', 'timestamp')]
             self.feature_columns = [
                 col for col in df.columns 
-                if col not in [self.target_column, self.data_config['features']['timestamp_column']]
+                if col not in exclude_cols
             ]
         
-        # Extract features and target
+        # Extract features and targets
         X = df[self.feature_columns].values
-        y = df[self.target_column].values
         
-        logger.info(f"Loaded {len(df)} samples with {len(self.feature_columns)} features from BigQuery")
+        # Handle multi-horizon or single target
+        if self.multi_horizon:
+            y = df[self.target_columns].values  # Shape: (n_samples, n_horizons)
+            logger.info(f"Loaded {len(df)} samples with {len(self.feature_columns)} features, "
+                       f"{len(self.target_columns)} target horizons from BigQuery")
+        else:
+            y = df[self.target_columns[0]].values  # Shape: (n_samples,)
+            logger.info(f"Loaded {len(df)} samples with {len(self.feature_columns)} features from BigQuery")
         
         return X, y
     

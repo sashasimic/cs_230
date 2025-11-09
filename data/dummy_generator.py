@@ -16,10 +16,17 @@ def generate_dummy_data(
     train_ratio: float = 0.7,
     val_ratio: float = 0.15,
     output_dir: str = 'data/dummy',
-    seed: int = 42
+    seed: int = 42,
+    multi_horizon: bool = True,
+    shuffle: bool = False
 ) -> None:
     """
-    Generate dummy time series data with trend and seasonality.
+    Generate dummy time series data for inflation forecasting.
+    
+    Creates features and multi-horizon targets:
+    - target_1m: 1-month ahead inflation
+    - target_3m: 3-month ahead inflation  
+    - target_6m: 6-month ahead inflation
     
     Args:
         n_samples: Number of time steps
@@ -29,6 +36,7 @@ def generate_dummy_data(
         val_ratio: Validation set ratio
         output_dir: Output directory
         seed: Random seed
+        multi_horizon: If True, generate 3 horizon targets; else single target
     """
     np.random.seed(seed)
     
@@ -60,24 +68,66 @@ def generate_dummy_data(
     
     features = np.column_stack(features)
     
-    # Generate target as combination of features with lag
-    lag = 5
-    target = np.zeros(n_samples)
-    target[lag:] = (
-        0.3 * features[:-lag, 0] +
-        0.2 * features[:-lag, 1] +
-        0.15 * features[:-lag, 2] +
-        np.random.randn(n_samples - lag) * 0.3
-    )
-    target[:lag] = target[lag]  # Fill initial values
+    # Generate multi-horizon targets for inflation forecasting
+    if multi_horizon:
+        # Create base inflation signal
+        base_inflation = (
+            0.3 * features[:, 0] +
+            0.2 * features[:, 1] +
+            0.15 * features[:, 2 % n_features] +
+            np.random.randn(n_samples) * 0.2
+        )
+        
+        # Normalize to realistic inflation range (e.g., -2% to 8%)
+        base_inflation = 2.0 + 3.0 * (base_inflation - base_inflation.mean()) / base_inflation.std()
+        
+        # Generate 1-month, 3-month, and 6-month ahead targets
+        target_1m = np.roll(base_inflation, -1)  # 1-month ahead
+        target_3m = np.roll(base_inflation, -3)  # 3-month ahead
+        target_6m = np.roll(base_inflation, -6)  # 6-month ahead
+        
+        # Add some decorrelation between horizons
+        target_3m += np.random.randn(n_samples) * 0.1
+        target_6m += np.random.randn(n_samples) * 0.15
+        
+        # Handle edge cases (last values)
+        target_1m[-1] = target_1m[-2]
+        target_3m[-3:] = target_3m[-4]
+        target_6m[-6:] = target_6m[-7]
+        
+    else:
+        # Single target (backward compatible)
+        lag = 5
+        target = np.zeros(n_samples)
+        target[lag:] = (
+            0.3 * features[:-lag, 0] +
+            0.2 * features[:-lag, 1] +
+            0.15 * features[:-lag, 2] +
+            np.random.randn(n_samples - lag) * 0.3
+        )
+        target[:lag] = target[lag]
     
     # Create DataFrame
     df = pd.DataFrame(
         features,
         columns=[f'feature_{i}' for i in range(n_features)]
     )
-    df['target'] = target
+    
+    if multi_horizon:
+        df['target_1m'] = target_1m
+        df['target_3m'] = target_3m
+        df['target_6m'] = target_6m
+    else:
+        df['target'] = target
+    
     df['timestamp'] = timestamps
+    
+    # Optionally shuffle (breaks temporal order!)
+    if shuffle:
+        logger.info("Shuffling data before split (temporal order broken)")
+        df = df.sample(frac=1, random_state=seed).reset_index(drop=True)
+    else:
+        logger.info("Maintaining temporal order (sequential split)")
     
     # Split data
     train_end = int(n_samples * train_ratio)
@@ -86,6 +136,8 @@ def generate_dummy_data(
     train_df = df.iloc[:train_end]
     val_df = df.iloc[train_end:val_end]
     test_df = df.iloc[val_end:]
+    
+    logger.info(f"Split ratios: train={train_ratio:.0%}, val={val_ratio:.0%}, test={1-(train_ratio+val_ratio):.0%}")
     
     # Save to CSV
     os.makedirs(output_dir, exist_ok=True)
@@ -105,8 +157,17 @@ def generate_dummy_data(
     # Print statistics
     logger.info(f"\nData statistics:")
     logger.info(f"Feature range: [{features.min():.2f}, {features.max():.2f}]")
-    logger.info(f"Target range: [{target.min():.2f}, {target.max():.2f}]")
-    logger.info(f"Target mean: {target.mean():.2f}, std: {target.std():.2f}")
+    
+    if multi_horizon:
+        logger.info(f"Target 1M range: [{target_1m.min():.2f}, {target_1m.max():.2f}], "
+                   f"mean: {target_1m.mean():.2f}, std: {target_1m.std():.2f}")
+        logger.info(f"Target 3M range: [{target_3m.min():.2f}, {target_3m.max():.2f}], "
+                   f"mean: {target_3m.mean():.2f}, std: {target_3m.std():.2f}")
+        logger.info(f"Target 6M range: [{target_6m.min():.2f}, {target_6m.max():.2f}], "
+                   f"mean: {target_6m.mean():.2f}, std: {target_6m.std():.2f}")
+    else:
+        logger.info(f"Target range: [{target.min():.2f}, {target.max():.2f}]")
+        logger.info(f"Target mean: {target.mean():.2f}, std: {target.std():.2f}")
 
 
 if __name__ == '__main__':

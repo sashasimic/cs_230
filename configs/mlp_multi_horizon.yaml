@@ -1,0 +1,92 @@
+# Multi-Horizon Inflation Forecasting Configuration
+# Predicts 1-month, 3-month, and 6-month ahead inflation
+# Single multi-task MLP model
+
+data:
+  source: 'local'
+  
+  local:
+    train_path: 'data/dummy/train.csv'
+    val_path: 'data/dummy/val.csv'
+    test_path: 'data/dummy/test.csv'
+    format: 'csv'
+  
+  features:
+    sequence_length: 30  # Use 30 time steps of history
+    feature_columns: []  # Auto-detect all numeric columns except targets
+    timestamp_column: 'timestamp'
+  
+  # Multi-horizon targets
+  horizons:
+    enabled: true
+    targets:
+      - 'target_1m'   # 1-month ahead inflation
+      - 'target_3m'   # 3-month ahead inflation
+      - 'target_6m'   # 6-month ahead inflation
+  
+  preprocessing:
+    normalization: 'standard'
+    handle_missing: 'interpolate'
+
+model:
+  type: 'mlp'
+  
+  # Common parameters
+  activation: 'relu'  # ReLU activation as per spec
+  dropout: 0.2        # Dropout between layers (0.1-0.3 range)
+  
+  # MLP architecture for inflation forecasting
+  mlp:
+    layer_dims: [64, 32]      # Dense(64) → Dense(32) as per spec
+    output_horizons: 3         # 3 outputs: [1M, 3M, 6M]
+    separate_models: false     # Single multi-task model
+    l2_weight_decay: 0.0       # Optional L2 (set to 0.0001-0.001 if needed)
+
+training:
+  # Hyperparameters
+  batch_size: 32
+  epochs: 100
+  learning_rate: 0.001    # Start with 1e-3, can decay to 1e-4
+  optimizer: 'adam'
+  
+  optimizer_params:
+    adam:
+      beta_1: 0.9
+      beta_2: 0.999
+      epsilon: 0.0000001
+  
+  # Loss function
+  loss: 'mse'  # MSE over the three horizons (averaged)
+  multi_horizon_loss_weight: 'equal'  # Equal weight for all horizons
+  
+  # Metrics
+  metrics: ['mae', 'mse', 'rmse']
+  
+  # Early stopping on validation MAE
+  early_stopping:
+    enabled: true
+    monitor: 'val_mae'  # Monitor MAE as per spec
+    patience: 15
+    restore_best_weights: true
+    min_delta: 0.0001
+  
+  # Optional: Learning rate reduction
+  learning_rate_schedule:
+    enabled: true
+    type: 'reduce_on_plateau'
+    factor: 0.5
+    patience: 5
+    min_lr: 0.0001  # Decay to 1e-4
+  
+  # Checkpointing
+  checkpointing:
+    enabled: true
+    save_best_only: true
+    monitor: 'val_mae'
+
+logging:
+  level: 'INFO'
+  log_dir: 'logs'
+  tensorboard: true
+
+seed: 42  # Reproducibility

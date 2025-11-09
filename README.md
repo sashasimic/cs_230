@@ -253,17 +253,44 @@ docker-compose up tensorboard
 **Generate synthetic time series data:**
 
 ```bash
-# Default: 10,000 samples, 10 features
+# Default: 10,000 samples, 10 features, 70/15/15 split
 python scripts/generate_data.py
 
-# Custom configuration
-python scripts/generate_data.py --n-samples 50000 --n-features 20 --output-dir data/dummy
+# Custom sample size and features
+python scripts/generate_data.py --n-samples 50000 --n-features 20
+
+# Custom train/val/test split (80/10/10)
+python scripts/generate_data.py \
+  --n-samples 10000 \
+  --train-ratio 0.8 \
+  --val-ratio 0.1
+
+# Custom split (60/20/20)
+python scripts/generate_data.py \
+  --n-samples 10000 \
+  --train-ratio 0.6 \
+  --val-ratio 0.2
+
+# With shuffling (breaks temporal order - not recommended for time series)
+python scripts/generate_data.py --n-samples 10000 --shuffle
 ```
 
 **Output files:**
-- `data/dummy/train.csv` (70% of data)
-- `data/dummy/val.csv` (15% of data)
-- `data/dummy/test.csv` (15% of data)
+- `data/dummy/train.csv` - Training set (default: 70%)
+- `data/dummy/val.csv` - Validation/Dev set (default: 15%)
+- `data/dummy/test.csv` - Test set (default: 15%)
+
+**Note:** Test set percentage is automatically calculated as `1 - train_ratio - val_ratio`. For example:
+- `--train-ratio 0.8 --val-ratio 0.1` → Test gets 10%
+- `--train-ratio 0.6 --val-ratio 0.2` → Test gets 20%
+
+**Data Split Options:**
+
+| Dataset Size | Recommended Split | Command |
+|--------------|-------------------|----------|
+| Small (<10K) | 70/15/15 | `--train-ratio 0.7 --val-ratio 0.15` (default) |
+| Medium (10K-100K) | 80/10/10 | `--train-ratio 0.8 --val-ratio 0.1` |
+| Large (>100K) | 90/5/5 | `--train-ratio 0.9 --val-ratio 0.05` |
 
 ### Training Models
 

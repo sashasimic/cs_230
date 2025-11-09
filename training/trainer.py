@@ -34,7 +34,7 @@ class Trainer:
         self._set_seeds(config['seed'])
         
         # Enable mixed precision if configured
-        if config['training']['mixed_precision']:
+        if config['training'].get('mixed_precision', False):
             policy = tf.keras.mixed_precision.Policy('mixed_float16')
             tf.keras.mixed_precision.set_global_policy(policy)
             logger.info("Mixed precision training enabled")
@@ -170,8 +170,9 @@ class Trainer:
         logger.info("Training completed")
         
         # Plot training history
-        if self.config['logging']['visualization']['enabled']:
-            plot_dir = self.config['logging']['visualization']['plot_dir']
+        visualization_config = self.config.get('logging', {}).get('visualization', {})
+        if visualization_config.get('enabled', True):  # Default to True
+            plot_dir = visualization_config.get('plot_dir', 'logs/plots')
             os.makedirs(plot_dir, exist_ok=True)
             plot_path = os.path.join(plot_dir, f'{model_name}_history.png')
             plot_training_history(self.history.history, plot_path)
