@@ -1,0 +1,91 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# Data files (keep structure via .gitkeep)
+data/raw/*
+data/processed/*
+data/dummy/*
+!data/**/.gitkeep
+
+# Logs and outputs
+logs/**/*
+!logs/.gitkeep
+!logs/**/.gitkeep
+*.log
+
+# Model artifacts
+checkpoints/**/*
+!checkpoints/.gitkeep
+models/**/*.h5
+models/**/*.keras
+models/**/*.pb
+models/**/*.ckpt
+!models/__init__.py
+!models/model_factory.py
+
+# Secrets and credentials (NEVER COMMIT)
+.env
+.env.local
+*.key
+*.pem
+*credentials*.json
+*service-account*.json
+config/secrets.yaml
+
+# GCP
+.gcp/
+
+# Temporary files
+*.tmp
+*.bak
+.cache/
+
+# OS
+Thumbs.db
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# Large files
+*.zip
+*.tar.gz
+*.csv.gz

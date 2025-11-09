@@ -1,0 +1,14 @@
+
+# Docker-specific ignores
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Outputs (will be mounted as volumes)
+logs/
+checkpoints/
+models/*.h5
+
+# Virtual environment (not needed in container)
+venv/
+.venv/

@@ -1,0 +1,157 @@
+# CS230 Deep Learning Project - Time Series Regression Configuration
+
+# Data Configuration
+data:
+  # Source: 'local' or 'bigquery'
+  source: 'local'
+  
+  # Local data settings
+  local:
+    train_path: 'data/dummy/train.csv'
+    val_path: 'data/dummy/val.csv'
+    test_path: 'data/dummy/test.csv'
+    format: 'csv'  # 'csv' or 'parquet'
+  
+  # BigQuery settings
+  bigquery:
+    project_id: 'your-gcp-project-id'
+    dataset_id: 'your-dataset-id'
+    train_table: 'train_data'
+    val_table: 'val_data'
+    test_table: 'test_data'
+    # Query template (optional, overrides table)
+    query_template: null
+  
+  # GCS settings for BigQuery export
+  gcs:
+    bucket_name: 'your-gcs-bucket'
+    export_path: 'exports/'
+    model_path: 'models/'
+  
+  # Feature configuration
+  features:
+    sequence_length: 30  # Number of time steps to look back
+    feature_columns: []  # Empty for dummy data, will be auto-detected
+    target_column: 'target'
+    timestamp_column: 'timestamp'
+  
+  # Preprocessing
+  preprocessing:
+    normalization: 'standard'  # 'standard', 'minmax', or 'none'
+    handle_missing: 'interpolate'  # 'interpolate', 'forward_fill', 'drop'
+
+# Model Configuration
+model:
+  # Model type: 'mlp', 'lstm', or 'transformer'
+  type: 'lstm'
+  
+  # Common parameters
+  hidden_dim: 128
+  num_layers: 2
+  dropout: 0.2
+  activation: 'relu'
+  
+  # LSTM-specific
+  lstm:
+    bidirectional: false
+    return_sequences: false
+  
+  # Transformer-specific
+  transformer:
+    num_heads: 4
+    ff_dim: 256
+    attention_dropout: 0.1
+  
+  # MLP-specific
+  mlp:
+    layer_dims: [256, 128, 64]  # Hidden layer dimensions
+
+# Training Configuration
+training:
+  # Hyperparameters
+  batch_size: 32
+  epochs: 100
+  learning_rate: 0.001
+  optimizer: 'adam'  # 'adam', 'sgd', 'rmsprop'
+  
+  # Optimizer parameters
+  optimizer_params:
+    adam:
+      beta_1: 0.9
+      beta_2: 0.999
+      epsilon: 0.0000001
+    sgd:
+      momentum: 0.9
+      nesterov: true
+  
+  # Loss function
+  loss: 'mse'  # 'mse', 'mae', 'huber'
+  
+  # Metrics
+  metrics: ['mae', 'mse', 'rmse']
+  
+  # Early stopping
+  early_stopping:
+    enabled: true
+    monitor: 'val_loss'
+    patience: 15
+    restore_best_weights: true
+    min_delta: 0.0001
+  
+  # Checkpointing
+  checkpointing:
+    enabled: true
+    monitor: 'val_loss'
+    save_best_only: true
+    save_freq: 'epoch'
+  
+  # Learning rate scheduling
+  lr_schedule:
+    enabled: false
+    type: 'reduce_on_plateau'  # 'reduce_on_plateau', 'exponential', 'cosine'
+    factor: 0.5
+    patience: 5
+    min_lr: 1e-7
+  
+  # Mixed precision training
+  mixed_precision: false
+
+# Logging and Visualization
+logging:
+  # TensorBoard
+  tensorboard:
+    enabled: true
+    log_dir: 'logs/tensorboard'
+    update_freq: 'epoch'
+    profile_batch: 0
+  
+  # Model checkpoints
+  checkpoint_dir: 'checkpoints/'
+  
+  # Metrics logging
+  metrics_dir: 'logs/metrics'
+  
+  # Visualization
+  visualization:
+    enabled: true
+    save_plots: true
+    plot_dir: 'logs/plots'
+    plot_frequency: 5  # Save plots every N epochs
+
+# Google Cloud Platform
+gcp:
+  # General settings
+  region: 'us-central1'
+  
+  # Vertex AI settings
+  vertex_ai:
+    enabled: false
+    machine_type: 'n1-standard-4'
+    accelerator_type: 'NVIDIA_TESLA_T4'
+    accelerator_count: 1
+  
+  # Service account
+  service_account: null  # Path to service account JSON
+
+# Random seed for reproducibility
+seed: 42
