@@ -67,6 +67,7 @@ models/**/*.ckpt
 *credentials*.json
 *service-account*.json
 config/secrets.yaml
+credentials/  # GCP service account keys
 
 # GCP
 .gcp/

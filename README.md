@@ -11,9 +11,11 @@
 - [Installation](#installation)
   - [Local Setup](#local-setup)
   - [Docker Setup](#docker-setup)
+  - [GCP Setup](#google-cloud-platform-gcp-setup)
 - [Quick Start](#quick-start)
 - [Usage](#usage)
-  - [Data Generation](#data-generation)
+  - [Phase 1: Extract from BigQuery](#phase-1-extract-data-from-bigquery)
+  - [Data Generation (Synthetic)](#data-generation-synthetic)
   - [Training Models](#training-models)
   - [Model Architectures](#model-architectures)
   - [Visualization](#visualization)
@@ -46,14 +48,17 @@ This project provides a complete deep learning pipeline for time series regressi
 inflation_predictor/
 │
 ├── configs/
-│   └── config.yaml              # Main configuration file
+│   ├── config.yaml              # Main configuration file
+│   ├── mlp_multi_horizon.yaml   # Multi-horizon MLP config
+│   └── tickers.yaml             # Ticker list for BigQuery extraction
 │
 ├── data/
 │   ├── __init__.py
 │   ├── data_loader.py           # Data loading & preprocessing
 │   ├── dummy_generator.py       # Synthetic data generation
-│   ├── raw/                     # Raw data files
-│   ├── processed/               # Preprocessed data
+│   ├── raw/                     # Raw data from BigQuery
+│   │   └── stocks_raw.parquet   # Phase 1 output
+│   ├── processed/               # Preprocessed data for training
 │   └── dummy/                   # Generated dummy data
 │
 ├── models/
@@ -82,9 +87,14 @@ inflation_predictor/
 │
 ├── notebooks/                   # Jupyter notebooks for analysis
 │
+├── credentials/                 # GCP service account keys (gitignored)
+│   └── gcp-key.json             # Your BigQuery credentials
+│
 ├── scripts/                     # Utility scripts
 │   ├── __init__.py
-│   └── generate_data.py         # Data generation script
+│   ├── extract_tickers_from_bigquery.py  # Phase 1: BigQuery extraction
+│   ├── generate_data.py         # Generate synthetic data
+│   └── test_model.py            # Test model architectures
 │
 ├── train.py                     # Main training script
 ├── requirements.txt             # Python dependencies
@@ -215,6 +225,237 @@ docker-compose config
 # Code should be mounted at: .:/app
 ```
 
+### Google Cloud Platform (GCP) Setup
+
+**For BigQuery data extraction (optional - skip if using dummy data):**
+
+#### Prerequisites:
+- Google Cloud Platform account
+- BigQuery dataset with stock/index data
+- Service account with BigQuery access
+
+#### Setup Steps:
+
+**1. Create a GCP Service Account:**
+
+```bash
+# In Google Cloud Console:
+# 1. Navigate to: IAM & Admin > Service Accounts
+# 2. Click "Create Service Account"
+# 3. Name: "cs230-bigquery-reader"
+# 4. Grant roles:
+#    - BigQuery Data Viewer
+#    - BigQuery Job User
+# 5. Create and download JSON key
+```
+
+**2. Store Service Account Key:**
+
+```bash
+# Create credentials directory (gitignored)
+mkdir -p credentials
+
+# Move your downloaded key
+mv ~/Downloads/your-service-account-key.json credentials/gcp-key.json
+
+# Verify .gitignore includes credentials/
+grep -q "credentials/" .gitignore || echo "credentials/" >> .gitignore
+```
+
+**3. Set Environment Variable:**
+
+```bash
+# For local development (add to ~/.bashrc or ~/.zshrc)
+export GOOGLE_APPLICATION_CREDENTIALS="/full/path/to/credentials/gcp-key.json"
+
+# Or set per-session
+export GOOGLE_APPLICATION_CREDENTIALS="$(pwd)/credentials/gcp-key.json"
+```
+
+**4. Configure BigQuery Details:**
+
+Edit `configs/tickers.yaml`:
+
+```yaml
+bigquery:
+  project_id: 'your-gcp-project-id'      # e.g., 'my-ml-project'
+  dataset_id: 'your-bigquery-dataset'    # e.g., 'stock_data'
+  table_name: 'stock_ohlcv'              # Your table name
+```
+
+**5. Verify Connection:**
+
+**Install Google Cloud SDK (if needed):**
+
+```bash
+# macOS
+brew install google-cloud-sdk
+
+# Linux
+curl https://sdk.cloud.google.com | bash
+exec -l $SHELL
+
+# Or download from: https://cloud.google.com/sdk/docs/install
+```
+
+**Test Authentication:**
+
+```bash
+# Method 1: Using gcloud CLI
+gcloud auth application-default login
+
+# Method 2: Using service account key (recommended for automation)
+export GOOGLE_APPLICATION_CREDENTIALS="$(pwd)/credentials/gcp-key.json"
+
+# Verify authentication works
+gcloud auth list
+```
+
+**Test BigQuery Access:**
+
+```bash
+# 1. Test project access
+gcloud config set project your-project-id
+gcloud projects describe your-project-id
+
+# 2. List datasets (verify you can see your dataset)
+bq ls
+
+# 3. List tables in your dataset
+bq ls your-dataset-id
+
+# 4. Test query on your table
+bq query --use_legacy_sql=false \
+  'SELECT COUNT(*) as row_count FROM `your-project-id.your-dataset-id.stock_ohlcv` LIMIT 1'
+
+# 5. Preview table data
+bq head -n 5 your-project-id:your-dataset-id.stock_ohlcv
+
+# 6. Show table schema
+bq show --schema your-project-id:your-dataset-id.stock_ohlcv
+```
+
+**Test with Python:**
+
+```bash
+# Test connection from Python
+python -c "
+from google.cloud import bigquery
+import os
+
+print('Testing BigQuery connection...')
+client = bigquery.Client()
+print(f'✓ Connected to project: {client.project}')
+
+# List datasets
+datasets = list(client.list_datasets())
+if datasets:
+    print(f'✓ Found {len(datasets)} datasets:')
+    for dataset in datasets:
+        print(f'  - {dataset.dataset_id}')
+else:
+    print('⚠️ No datasets found')
+
+print('✓ Connection successful!')
+"
+
+# Test extraction script
+python scripts/extract_tickers_from_bigquery.py --tickers AAPL --start-date 2024-01-01 --end-date 2024-01-31
+```
+
+**Troubleshoot Connection Issues:**
+
+```bash
+# Check environment variable is set
+echo $GOOGLE_APPLICATION_CREDENTIALS
+
+# Verify key file exists and is readable
+ls -l $GOOGLE_APPLICATION_CREDENTIALS
+cat $GOOGLE_APPLICATION_CREDENTIALS | python -m json.tool | head -20
+
+# Check service account permissions
+gcloud projects get-iam-policy your-project-id \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:serviceAccount:YOUR_SERVICE_ACCOUNT_EMAIL"
+
+# Test with verbose output
+bq --apilog query --use_legacy_sql=false 'SELECT 1 as test'
+```
+
+**Expected Output:**
+
+```
+✓ Connected to project: your-project-id
+✓ Found 3 datasets:
+  - stock_data
+  - analytics
+  - ml_models
+✓ Connection successful!
+```
+
+**Docker with GCP:**
+
+```bash
+# Mount credentials into Docker container
+docker-compose run --rm \
+  -v $(pwd)/credentials:/app/credentials \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/gcp-key.json \
+  trainer bash
+```
+
+Or add to `docker-compose.yml`:
+
+```yaml
+services:
+  trainer:
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/gcp-key.json
+    volumes:
+      - ./credentials:/app/credentials:ro  # Read-only mount
+```
+
+**Security Best Practices:**
+
+- ✅ **Never commit** service account keys to git
+- ✅ Store keys in `credentials/` directory (gitignored)
+- ✅ Use read-only permissions (BigQuery Data Viewer)
+- ✅ Rotate keys periodically
+- ✅ Use different keys for dev/prod
+- ❌ Don't hardcode credentials in code
+- ❌ Don't share keys via email/Slack
+
+#### Recommended: User Account Authentication (No Keys Needed)
+
+**If service account key creation is disabled by your organization**, use personal account authentication:
+
+```bash
+# 1. Install Google Cloud SDK
+brew install google-cloud-sdk  # macOS
+
+# 2. Set your GCP project
+gcloud config set project sp-indicators  # Replace with your project ID
+
+# 3. Authenticate with your Google account
+gcloud auth application-default login
+# This opens a browser - sign in with your Google account
+
+# 4. Set environment variable (permanent)
+echo 'export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/gcloud/application_default_credentials.json"' >> ~/.zshrc
+source ~/.zshrc
+
+# 5. Verify connection
+python -c "from google.cloud import bigquery; c = bigquery.Client(); print(f'✓ Connected to {c.project}')"
+```
+
+**Benefits:**
+- ✅ No keys to manage or rotate
+- ✅ More secure (no files to leak)
+- ✅ Better audit trail (actions tracked per user)
+- ✅ Works immediately
+- ✅ Bypasses organization policy restrictions
+
+**Team Setup:** Each team member runs the same authentication steps with their own Google account.
+
 ---
 
 ## ⚡ Quick Start
@@ -248,9 +489,197 @@ docker-compose up tensorboard
 
 ## 📖 Usage
 
-### Data Generation
+### Phase 1: Extract Data from BigQuery
 
-**Generate synthetic time series data:**
+**Extract real stock/index data from your BigQuery table:**
+
+#### Prerequisites:
+- GCP setup completed (see [GCP Setup](#google-cloud-platform-gcp-setup))
+- BigQuery table with OHLCV data
+- Tickers configured in `configs/tickers.yaml`
+
+#### Check Data Availability (Recommended First Step):
+
+Before extracting data, verify which tickers have data and their date ranges:
+
+```bash
+# Check all 40 tickers in config
+python scripts/extract_tickers_from_bigquery.py --check-availability
+
+# Check specific tickers only
+python scripts/extract_tickers_from_bigquery.py --check-availability --tickers SPY QQQ IWM
+```
+
+**Output Example:**
+
+```
+================================================================================
+DATA AVAILABILITY CHECK
+================================================================================
+Checking 40 tickers in: your-project.stock_data.stock_ohlcv
+================================================================================
+
+Ticker     Start Date   End Date     Days     Span     Coverage  
+================================================================================
+BIL        2007-05-30   2024-11-08   4400     6371     69.1%     
+BNO        2010-06-02   2024-11-08   3615     5273     68.5%     
+CPER       2011-11-15   2024-11-08   3267     4742     68.9%     
+DBA        2007-01-05   2024-11-08   4489     6516     68.9%     
+DBC        2006-02-03   2024-11-08   4724     6853     68.9%     
+EMB        2007-12-17   2024-11-08   4267     6170     69.1%     
+FXE        2005-12-08   2024-11-08   4764     6910     68.9%     
+GLD        2004-11-18   2024-11-08   5028     7295     68.9%     
+...
+
+Summary:
+  Total tickers found: 38
+  Missing tickers: 2
+  Average trading days: 3,847
+  Min start date: 2004-11-18
+  Max end date: 2024-11-08
+  Average coverage: 68.7%
+
+⚠️  Missing tickers (no data found): MOVE, XYZ
+
+⚠️  Tickers with <70% coverage:
+    BIL: 69.1% (4400 days)
+    BNO: 68.5% (3615 days)
+================================================================================
+```
+
+**What it shows:**
+- **Start Date**: First available data point
+- **End Date**: Last available data point
+- **Days**: Number of trading days with data
+- **Span**: Total calendar days between start and end
+- **Coverage**: % of calendar days with data (accounts for weekends/holidays)
+
+**Use this to:**
+- Identify missing tickers
+- Find tickers with limited history
+- Determine common date range for all tickers
+- Spot data quality issues
+
+#### Verify Extracted Data:
+
+```bash
+# Run verification script
+python scripts/verify_raw_stocks_data.py
+
+# Verify specific ticker
+python scripts/verify_raw_stocks_data.py --ticker XLU
+
+# Verify custom file
+python scripts/verify_raw_stocks_data.py --file data/raw/my_data.parquet
+```
+
+#### Manage Tickers:
+
+**Edit config file** (`configs/tickers.yaml`):
+
+```yaml
+tickers:
+  - AAPL
+  - MSFT
+  - GOOGL
+  # Add more tickers here
+```
+
+**Or use command-line:**
+
+```bash
+# Add new tickers and save to config
+python scripts/extract_tickers_from_bigquery.py \
+  --add-tickers TSLA NVDA \
+  --save-config
+
+# Remove specific tickers
+python scripts/extract_tickers_from_bigquery.py \
+  --remove-tickers VIX \
+  --save-config
+
+# Replace entire ticker list
+python scripts/extract_tickers_from_bigquery.py \
+  --replace-tickers AAPL MSFT GOOGL AMZN \
+  --save-config
+
+# One-time override (don't update config)
+python scripts/extract_tickers_from_bigquery.py \
+  --tickers AAPL MSFT GOOGL
+```
+
+#### Custom Date Ranges:
+
+```bash
+# Extract specific date range
+python scripts/extract_tickers_from_bigquery.py \
+  --start-date 2020-01-01 \
+  --end-date 2023-12-31
+
+# Extract last 2 years only
+python scripts/extract_tickers_from_bigquery.py \
+  --start-date 2022-01-01
+```
+
+#### Advanced Options:
+
+```bash
+# Force refresh (re-download even if file exists)
+python scripts/extract_tickers_from_bigquery.py --force
+
+# Custom output location
+python scripts/extract_tickers_from_bigquery.py \
+  --output data/raw/my_stocks.parquet
+
+# Use different config file
+python scripts/extract_tickers_from_bigquery.py \
+  --config configs/tickers_tech.yaml
+```
+
+#### Output Format:
+
+**Wide-format Parquet file** - one row per date, columns for each ticker:
+
+```
+date       | AAPL_open | AAPL_high | AAPL_low | AAPL_close | AAPL_volume | MSFT_open | MSFT_high | ...
+-----------|-----------|-----------|---------  |------------|-------------|-----------|-----------|----
+2023-01-01 | 130.50    | 132.20    | 129.80   | 131.00     | 100.5M      | 240.10    | 242.50    | ...
+2023-01-02 | 131.20    | 133.40    | 130.50   | 132.10     | 95.2M       | 241.00    | 243.20    | ...
+```
+
+**Features:**
+- ✅ Handles missing dates (holidays, weekends)
+- ✅ Forward-fills gaps
+- ✅ Compressed Parquet format (10-50 MB for 10 years)
+- ✅ Ready for Phase 2 (feature engineering)
+
+#### Example Workflow:
+
+```bash
+# 1. Configure your tickers
+vim configs/tickers.yaml
+
+# 2. Check data availability (verify all tickers exist)
+python scripts/extract_tickers_from_bigquery.py --check-availability
+# Review output, remove missing tickers if needed
+
+# 3. Extract from BigQuery (one-time, ~1-2 minutes)
+python scripts/extract_tickers_from_bigquery.py
+
+# 4. Verify extraction
+ls -lh data/raw/stocks_raw.parquet
+
+# 5. Inspect data
+python -c "import pandas as pd; df = pd.read_parquet('data/raw/stocks_raw.parquet'); print(df.head()); print(df.info())"
+
+# 6. Ready for Phase 2 feature engineering!
+```
+
+---
+
+### Data Generation (Synthetic)
+
+**Generate synthetic time series data for testing:**
 
 ```bash
 # Default: 10,000 samples, 10 features, 70/15/15 split

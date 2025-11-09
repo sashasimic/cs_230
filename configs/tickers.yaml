@@ -1,0 +1,113 @@
+# Ticker Configuration for BigQuery Data Extraction
+# Economic Cycle & Inflation Forecasting Framework
+# Mission: Track cyclical elements and inflation dynamics through market indicators
+
+tickers:
+  # ========================================
+  # A. EQUITY MARKET INDICES
+  # ========================================
+  # Primary economic bellwethers - anticipate inflation 3-6 months ahead
+  
+  - SPY      # S&P 500 - Primary economic bellwether, inflation-driven earnings signal
+  - QQQ      # Nasdaq 100 - Inflation-sensitive via discount rate (growth stocks)
+  - IWM      # Russell 2000 - Domestic demand & wage inflation proxy
+  - RSP      # Equal-Weight S&P 500 - Market breadth, narrows during inflation uncertainty
+  
+  # ========================================
+  # B. S&P SECTOR ETFs (Sector Rotation)
+  # ========================================
+  # Different sectors lead in different economic phases
+  
+  # Early Expansion Leaders (Trough → Recovery)
+  - XLF      # Financials - Credit creation, loan growth fuels spending
+  - XLI      # Industrials - Early cyclical recovery
+  - XLY      # Consumer Discretionary - Demand recovery signal
+  
+  # Mid Expansion Leaders (Recovery → Peak)  
+  - XLK      # Technology - Growth phase, inflation-sensitive to rates
+  - XLE      # Energy - Direct inflation transmission via oil prices
+  - XLB      # Materials - Cost-push inflation signal, commodity demand
+  
+  # Late Expansion / Defensive (Peak → Slowdown)
+  - XLP      # Consumer Staples - Inflation resilience, pricing power
+  - XLV      # Health Care - Defensive, late-cycle outperformer
+  - XLU      # Utilities - Inflation-sensitive through rate costs
+  - XLRE     # Real Estate - Inflation hedge but rate-sensitive
+  
+  # ========================================
+  # C. FIXED INCOME (Interest Rate Environment)
+  # ========================================
+  # Embed purest inflation expectations
+  
+  - BIL      # 1-3 Month T-Bills - Fed policy anchor for inflation control
+  - SHY      # 1-3 Year Treasury - Short-term rates
+  - IEF      # 7-10 Year Treasury - Nominal growth & inflation outlook
+  - TLT      # 20+ Year Treasury - Long-term inflation expectations
+  - TIP      # TIPS - Explicit real-yield, inflation breakeven measure
+  - STIP     # Short-Term TIPS - Near-term inflation sentiment
+  
+  # ========================================
+  # D. CREDIT MARKETS (Credit Cycle)
+  # ========================================
+  # Credit risk rises when inflation erodes margins
+  
+  - LQD      # Investment Grade Corporate Bonds
+  - HYG      # High Yield Bonds - Sensitive to inflation-driven rate hikes
+  - EMB      # Emerging Market Bonds - Inflation shocks → EM stress
+  
+  # ========================================
+  # E. COMMODITIES (Inflation Drivers)
+  # ========================================
+  # Core inflation drivers, rise early in expansions
+  
+  - DBC      # Broad Commodities Index - Core inflation driver
+  - USO      # Crude Oil - Energy cost inflation
+  - BNO      # Brent Oil - Alternative oil exposure
+  - CPER     # Copper - Industrial demand proxy
+  - DBA      # Agriculture - Food inflation
+  - GLD      # Gold - Inflation hedge, policy distrust indicator
+  
+  # ========================================
+  # F. REAL ESTATE (Rate & Inflation Link)
+  # ========================================
+  # Housing leads services inflation with 12-18 month lag
+  
+  - ITB      # Homebuilders - Mortgage-rate sensitivity, housing cycles
+  # XLRE already listed above in sectors
+  
+  # ========================================
+  # G. CURRENCY (Dollar & Inflation Transmission)
+  # ========================================
+  # Dollar acts as global inflation valve
+  
+  - UUP      # US Dollar Index - Strong USD → imported disinflation
+  - FXE      # Euro - Weak EUR → exported inflation to EU
+
+# Date range for extraction
+date_range:
+  start_date: '2014-01-01'  # 10 years of data
+  end_date: null  # null = use today's date
+
+# BigQuery configuration
+bigquery:
+  project_id: 'sp-indicators'
+  dataset_id: 'macro_signals'
+  table_name: 'raw_ohlcv'
+
+# Output configuration
+output:
+  raw_data_path: 'data/raw/stocks_raw.parquet'
+  compression: 'snappy'
+  
+# Which columns to extract (set to null to get all)
+columns:
+  - ticker
+  - date
+  - open
+  - high
+  - low
+  - close
+  - volume
+  - vwap  # Volume weighted average price
+  # - transactions  # Uncomment if needed
+  # - timestamp     # Uncomment if needed
