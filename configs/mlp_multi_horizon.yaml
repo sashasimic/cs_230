@@ -6,10 +6,10 @@ data:
   source: 'local'
   
   local:
-    train_path: 'data/dummy/train.csv'
-    val_path: 'data/dummy/val.csv'
-    test_path: 'data/dummy/test.csv'
-    format: 'csv'
+    train_path: 'data/processed/train.parquet'
+    val_path: 'data/processed/val.parquet'
+    test_path: 'data/processed/test.parquet'
+    format: 'parquet'
   
   features:
     sequence_length: 30  # Use 30 time steps of history
@@ -20,9 +20,9 @@ data:
   horizons:
     enabled: true
     targets:
-      - 'target_1m'   # 1-month ahead inflation
-      - 'target_3m'   # 3-month ahead inflation
-      - 'target_6m'   # 6-month ahead inflation
+      - 'target_1M'   # 1-month ahead inflation
+      - 'target_3M'   # 3-month ahead inflation
+      - 'target_6M'   # 6-month ahead inflation
   
   preprocessing:
     normalization: 'standard'

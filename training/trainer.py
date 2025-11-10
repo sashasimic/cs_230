@@ -96,17 +96,19 @@ class Trainer:
         metrics = []
         for metric_name in training_config['metrics']:
             if metric_name == 'mae':
-                metrics.append('mae')
+                metrics.append(keras.metrics.MeanAbsoluteError(name='mae'))
             elif metric_name == 'mse':
-                metrics.append('mse')
+                metrics.append(keras.metrics.MeanSquaredError(name='mse'))
             elif metric_name == 'rmse':
                 metrics.append(keras.metrics.RootMeanSquaredError(name='rmse'))
             else:
                 metrics.append(metric_name)
         
+        final_loss = loss_name
+        
         self.model.compile(
             optimizer=optimizer,
-            loss=loss_name,
+            loss=final_loss,
             metrics=metrics
         )
         

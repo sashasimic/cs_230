@@ -64,7 +64,11 @@ tickers:
   - USO      # Crude Oil - Energy cost inflation
   - BNO      # Brent Oil - Alternative oil exposure
   - CPER     # Copper - Industrial demand proxy
-  - DBA      # Agriculture - Food inflation
+  - DBA      # Agriculture - Food inflation proxy
+  - ORN      # VanEck Agribusiness ETF - Food inflation proxy
+  - WEAT     # Teucrium Wheat ETF - Food inflation proxy
+  - SOYB     # Teucrium Soybean ETF - Food inflation proxy
+  - RJA      # Elements Rogers Agriculture ETF - Food inflation proxy
   - GLD      # Gold - Inflation hedge, policy distrust indicator
   
   # ========================================

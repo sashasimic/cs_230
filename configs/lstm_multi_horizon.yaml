@@ -1,0 +1,83 @@
+# Multi-Horizon Food Inflation Forecasting Configuration
+# LSTM model for time series prediction
+# Predicts 1-month, 3-month, and 6-month ahead food inflation
+
+data:
+  source: 'local'
+  
+  local:
+    train_path: 'data/processed/train.parquet'
+    val_path: 'data/processed/val.parquet'
+    test_path: 'data/processed/test.parquet'
+    format: 'parquet'
+  
+  features:
+    sequence_length: 30  # Increased from 30 to capture longer patterns
+    feature_columns: []
+    timestamp_column: 'timestamp'
+  
+  horizons:
+    enabled: true
+    targets:
+      - 'target_1M'
+      - 'target_3M'
+      - 'target_6M'
+  
+  preprocessing:
+    normalization: 'standard'
+    handle_missing: 'interpolate'
+
+model:
+  type: 'lstm'
+  
+  # LSTM architecture (simple/optimal)
+  num_layers: 2         # Number of LSTM layers
+  hidden_dim: 64        # Hidden units in LSTM layers
+  activation: 'relu'    # Activation for dense layers
+  dropout: 0.2          # Dropout rate
+  
+  lstm:
+    return_sequences: false  # Last LSTM returns single output
+    bidirectional: false     # Use bidirectional LSTM
+    output_horizons: 3       # 3 outputs: [1M, 3M, 6M]
+
+training:
+  batch_size: 32
+  epochs: 100
+  learning_rate: 0.0001  # Lower from 0.001
+  gradient_clip_norm: 1.0  # Add gradient clipping
+  optimizer: 'adam'
+  
+  optimizer_params:
+    adam:
+      beta_1: 0.9
+      beta_2: 0.999
+      epsilon: 0.0000001
+  
+  loss: 'mse'
+  metrics: ['mae', 'mse', 'rmse']
+  
+  early_stopping:
+    enabled: true
+    monitor: 'val_mae'
+    patience: 15
+    restore_best_weights: true
+    min_delta: 0.0001
+  
+  learning_rate_schedule:
+    enabled: true
+    type: 'reduce_on_plateau'
+    factor: 0.5
+    patience: 5
+    min_lr: 0.0001
+  
+  checkpointing:
+    enabled: true
+    save_best_only: true
+    monitor: 'val_mae'
+
+logging:
+  level: 'INFO'
+  tensorboard: true
+
+seed: 42

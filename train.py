@@ -54,6 +54,19 @@ def main():
     config = load_config(args.config)
     logger.info("✓ Configuration loaded")
     
+    # Set random seed for reproducibility
+    if 'seed' in config:
+        import tensorflow as tf
+        import numpy as np
+        import random
+        
+        seed = config['seed']
+        tf.random.set_seed(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        os.environ['PYTHONHASHSEED'] = str(seed)
+        logger.info(f"✓ Random seed set to {seed} for reproducibility")
+    
     # Override config
     overrides = {}
     if args.model_type: overrides['model.type'] = args.model_type

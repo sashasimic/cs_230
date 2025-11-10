@@ -274,6 +274,89 @@ def check_scaler(data_dir):
     return True
 
 
+def check_weekday_coverage(train_df, val_df, test_df):
+    """Check that data only contains weekdays and has full coverage."""
+    logger.info("\n" + "="*70)
+    logger.info("WEEKDAY COVERAGE CHECK")
+    logger.info("="*70)
+    
+    # Combine all splits
+    all_dfs = []
+    for df in [train_df, val_df, test_df]:
+        df_copy = df.copy()
+        df_copy['date'] = pd.to_datetime(df_copy['date'])
+        all_dfs.append(df_copy)
+    
+    # Combine
+    combined_df = pd.concat(all_dfs, ignore_index=True)
+    combined_df = combined_df.sort_values('date').reset_index(drop=True)
+    
+    # Add day of week info
+    combined_df['day_of_week'] = combined_df['date'].dt.dayofweek  # 0=Mon, 6=Sun
+    combined_df['day_name'] = combined_df['date'].dt.day_name()
+    
+    # Check day distribution
+    logger.info("\nDay of week distribution:")
+    day_counts = combined_df['day_name'].value_counts().reindex(
+        ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+        fill_value=0
+    )
+    for day, count in day_counts.items():
+        logger.info(f"  {day:9s}: {count:4d}")
+    
+    # Check for weekends
+    weekends = combined_df[combined_df['day_of_week'] >= 5]
+    weekend_count = len(weekends)
+    
+    if weekend_count > 0:
+        logger.error(f"\n❌ Found {weekend_count} weekend days!")
+        logger.error(f"  First 5 weekend dates: {list(weekends['date'].head().dt.date)}")
+        return False
+    else:
+        logger.info(f"\n✓ No weekend days (Sat/Sun): 0")
+    
+    # Check coverage
+    total_days = len(combined_df)
+    date_start = combined_df['date'].min()
+    date_end = combined_df['date'].max()
+    years = (date_end - date_start).days / 365.25
+    
+    logger.info(f"\nDate range: {date_start.date()} to {date_end.date()}")
+    logger.info(f"Time span: {years:.2f} years")
+    logger.info(f"Total weekdays: {total_days}")
+    
+    # Expected weekdays in this range
+    date_range = pd.date_range(start=date_start, end=date_end, freq='D')
+    expected_weekdays = len(date_range[date_range.dayofweek < 5])
+    
+    logger.info(f"Expected weekdays: {expected_weekdays}")
+    logger.info(f"Actual weekdays: {total_days}")
+    coverage = (total_days / expected_weekdays) * 100
+    logger.info(f"Coverage: {coverage:.1f}%")
+    
+    # Trading years
+    trading_years = total_days / 252
+    logger.info(f"Equivalent trading years: {trading_years:.2f} years")
+    
+    # Split breakdown
+    logger.info(f"\nSplit breakdown:")
+    logger.info(f"  Train: {len(train_df):4d} days ({len(train_df)/total_days*100:.1f}%)")
+    logger.info(f"  Val:   {len(val_df):4d} days ({len(val_df)/total_days*100:.1f}%)")
+    logger.info(f"  Test:  {len(test_df):4d} days ({len(test_df)/total_days*100:.1f}%)")
+    logger.info(f"  Total: {total_days:4d} days (100.0%)")
+    
+    # Check if coverage is good
+    if coverage >= 99.0:
+        logger.info(f"\n✓ Excellent coverage: {coverage:.1f}%")
+        return True
+    elif coverage >= 95.0:
+        logger.info(f"\n✓ Good coverage: {coverage:.1f}%")
+        return True
+    else:
+        logger.warning(f"\n⚠️  Low coverage: {coverage:.1f}% (missing {expected_weekdays - total_days} weekdays)")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description='Verify processed feature data')
     parser.add_argument('--data-dir', default='data/processed', help='Processed data directory')
@@ -298,6 +381,7 @@ def main():
     checks_passed.append(check_missing_values(train_df, val_df, test_df, feature_cols, target_cols))
     checks_passed.append(check_feature_scaling(train_df, val_df, test_df, feature_cols))
     checks_passed.append(check_data_leakage(train_df, val_df, test_df))
+    checks_passed.append(check_weekday_coverage(train_df, val_df, test_df))
     check_target_distribution(train_df, val_df, test_df, target_cols)
     checks_passed.append(check_feature_names(args.data_dir))
     checks_passed.append(check_scaler(args.data_dir))

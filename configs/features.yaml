@@ -7,7 +7,7 @@
 date_range:
   # Set to null to use all available data
   # Or specify dates to filter (format: YYYY-MM-DD)
-  start_date: '2015-10-28'  # Earliest date across all sources
+  start_date: '2016-04-15'  # Earliest date across all sources
   end_date: '2025-10-24'    # Latest date to include
   # This ensures all data sources are aligned to the same date range
 
@@ -65,7 +65,7 @@ data_sources:
       # Moving averages
       moving_average:
         enabled: true
-        windows: [5, 21, 63]  # 1-week, 1-month, 3-month
+        windows: [5, 21]  # 1-week, 1-month (removed 63 due to NaN issues)
         types: ['sma']  # 'sma' (simple) or 'ema' (exponential)
       
       # RSI (Relative Strength Index)
@@ -196,12 +196,16 @@ output_targets:
       weight: 0.2
   
   # Tickers to use for target calculation
-  # Can be single ticker or weighted average of multiple
+  # Food inflation proxies (agricultural commodities)
   target_tickers:
-    - ticker: SPY
-      weight: 0.6  # 60% weight
-    - ticker: QQQ
-      weight: 0.4  # 40% weight
+    - ticker: DBA   # Agriculture ETF
+      weight: 0.25   # 25% weight
+    - ticker: WEAT  # Wheat ETF
+      weight: 0.25   # 25% weight
+    - ticker: SOYB  # Soybean ETF
+      weight: 0.25   # 25% weight
+    - ticker: RJA   # Rogers Agriculture ETF
+      weight: 0.25   # 25% weight
   
   # Target type: 'returns' or 'log_returns'
   target_type: 'returns'

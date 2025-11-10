@@ -171,6 +171,26 @@ def filter_date_range(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     return df
 
 
+def remove_weekends(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove weekend rows (Saturday and Sunday)."""
+    original_len = len(df)
+    
+    # Get day of week (0=Monday, 6=Sunday)
+    df['day_of_week'] = df['date'].dt.dayofweek
+    
+    # Keep only weekdays (Monday=0 to Friday=4)
+    df = df[df['day_of_week'] < 5].copy()
+    df = df.drop(columns=['day_of_week']).reset_index(drop=True)
+    
+    removed = original_len - len(df)
+    if removed > 0:
+        logger.info(f"\nRemoving weekends...")
+        logger.info(f"  Original: {original_len} rows")
+        logger.info(f"  Filtered: {len(df)} rows (removed {removed} weekend days)")
+    
+    return df
+
+
 def add_google_trends_features(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     """Add Google Trends-specific features."""
     if not config['data_sources'].get('google_trends', {}).get('enabled', False):
@@ -355,9 +375,11 @@ def compute_moving_average(df: pd.DataFrame, ticker: str, windows: List[int], ma
             col_name = f"{ticker}_ema_{window}d"
             df[col_name] = df[close_col].ewm(span=window, adjust=False).mean()
         
-        # Also compute price deviation from MA
+        # Also compute price deviation from MA (safe division)
         deviation_col = f"{ticker}_ma_dev_{window}d"
-        df[deviation_col] = (df[close_col] - df[col_name]) / df[col_name]
+        # Add epsilon to avoid division by zero, and fill NaN with 0
+        df[deviation_col] = (df[close_col] - df[col_name]) / (df[col_name] + 1e-10)
+        df[deviation_col] = df[deviation_col].fillna(0)
     
     return df
 
@@ -786,8 +808,8 @@ def main():
     # Load raw data from multiple sources
     df = load_data_sources(config)
     
-    # Filter to specified date range
-    df = filter_date_range(df, config)
+    # Remove weekends first (align all data sources to trading days)
+    df = remove_weekends(df)
     
     # Add Google Trends features (if enabled)
     df = add_google_trends_features(df, config)
@@ -801,6 +823,9 @@ def main():
     
     # Create targets
     df = create_targets(df, config)
+    
+    # NOW filter to date range (after features have been calculated with full history)
+    df = filter_date_range(df, config)
     
     # Select feature columns
     feature_cols = select_feature_columns(df, config)
