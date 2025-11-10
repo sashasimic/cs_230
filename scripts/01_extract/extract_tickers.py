@@ -6,22 +6,22 @@ a clean, wide-format dataset for feature engineering.
 
 Usage:
     # Use config file
-    python scripts/extract_tickers_from_bigquery.py
+    python scripts/01_extract/extract_tickers.py
     
     # Override tickers
-    python scripts/extract_tickers_from_bigquery.py --tickers AAPL MSFT GOOGL
+    python scripts/01_extract/extract_tickers.py --tickers AAPL MSFT GOOGL
     
     # Override date range
-    python scripts/extract_tickers_from_bigquery.py --start-date 2020-01-01
+    python scripts/01_extract/extract_tickers.py --start-date 2020-01-01
     
     # Add to existing tickers
-    python scripts/extract_tickers_from_bigquery.py --add-tickers TSLA NVDA
+    python scripts/01_extract/extract_tickers.py --add-tickers TSLA NVDA
     
     # Remove specific tickers
-    python scripts/extract_tickers_from_bigquery.py --remove-tickers VIX
+    python scripts/01_extract/extract_tickers.py --remove-tickers VIX
     
     # Force refresh (re-download even if file exists)
-    python scripts/extract_tickers_from_bigquery.py --force
+    python scripts/01_extract/extract_tickers.py --force
 """
 
 import os

@@ -1,0 +1,32 @@
+# Google Trends Configuration for Inflation Indicators
+# Search interest time series for inflation-related topics
+
+keywords:
+  # Core inflation search terms
+  - inflation           # General inflation awareness
+  - food prices         # Food cost inflation (direct consumer impact)
+  - gas prices          # Energy inflation (transportation costs)
+  - rent prices         # Housing inflation (shelter costs)
+  - interest rates      # Monetary policy awareness
+  - unemployment        # Labor market health
+  - recession           # Economic concern indicator
+  - cost of living      # Purchasing power perception
+
+# Date range for extraction
+date_range:
+  start_date: '2015-10-28'  # ~10 years of data
+  end_date: null  # null = use today's date
+
+# Geographic region
+region:
+  geo: 'US'  # United States
+  # Other options: 'UK', 'CA', 'DE', 'FR', 'JP', '' (worldwide)
+
+# Output configuration
+output:
+  path: 'data/raw/google_trends.parquet'
+  
+# API request settings
+api_settings:
+  throttle_seconds: 10  # Wait time between requests
+  max_retries: 8         # Retry attempts for rate limits

@@ -16,32 +16,48 @@ scripts/
 
 ## Phase 1: Data Extraction
 
-### `01_extract/extract_from_bigquery.py`
+### `01_extract/extract_tickers.py`
 
 **Extract raw OHLCV data from BigQuery**
 
 Extract stock/index data from BigQuery and save as parquet for local processing.
 
+**Configuration:** Edit `configs/tickers.yaml` to set default tickers, date range, BigQuery project/dataset/table, and output path.
+
 **Usage:**
 ```bash
+# Extract using config file (configs/tickers.yaml)
+python scripts/01_extract/extract_tickers.py
+
 # Check data availability for configured tickers
-python scripts/01_extract/extract_from_bigquery.py --check-availability
+python scripts/01_extract/extract_tickers.py --check-availability
 
-# Extract all tickers to parquet
-python scripts/01_extract/extract_from_bigquery.py
+# Force re-download even if file exists
+python scripts/01_extract/extract_tickers.py --force
 
-# Force re-download
-python scripts/01_extract/extract_from_bigquery.py --force
+# Override tickers from command line (temporary, doesn't modify config)
+python scripts/01_extract/extract_tickers.py --tickers SPY QQQ IWM
 
-# Add/remove tickers
-python scripts/01_extract/extract_from_bigquery.py --add-ticker AAPL MSFT
-python scripts/01_extract/extract_from_bigquery.py --remove-ticker AAPL
-python scripts/01_extract/extract_from_bigquery.py --replace-tickers SPY QQQ
+# Override date range (overrides config)
+python scripts/01_extract/extract_tickers.py --start-date 2015-10-28 --end-date 2025-10-24
+
+# Modify ticker list in config file (permanently updates tickers.yaml)
+python scripts/01_extract/extract_tickers.py --add-tickers AAPL MSFT --save-config
+python scripts/01_extract/extract_tickers.py --remove-tickers VIX --save-config
+python scripts/01_extract/extract_tickers.py --replace-tickers SPY QQQ --save-config
+
+# Override output path
+python scripts/01_extract/extract_tickers.py --output data/raw/custom.parquet
 ```
 
-**Configuration:**
-- Edit `configs/tickers.yaml` to configure tickers, date ranges, BigQuery details
-- Outputs to `data/raw/stocks_raw.parquet` by default
+**Configuration File (`configs/tickers.yaml`):**
+- **Tickers**: List of stock/ETF symbols to extract
+- **Date range**: Start/end dates (default: 2014-01-01 to today)
+- **BigQuery**: Project ID, dataset ID, table name
+- **Output**: File path and compression settings
+- **Columns**: Which columns to extract (OHLCV, VWAP, etc.)
+
+**Command-line arguments override config file settings.** Use `--save-config` to permanently update the config file.
 
 **Requirements:**
 - GCP authentication (see main README)
@@ -49,7 +65,90 @@ python scripts/01_extract/extract_from_bigquery.py --replace-tickers SPY QQQ
 
 ---
 
-### `01_extract/verify_extraction.py`
+### `01_extract/extract_google_trends.py`
+
+**Extract Google Trends data for inflation indicators**
+
+Fetch daily search interest data for inflation-related keywords from Google Trends (US region).
+
+**Configuration:** Edit `configs/google_trends.yaml` to set default keywords, date range, region, and API settings.
+
+**Usage:**
+```bash
+# Extract using config file (configs/google_trends.yaml)
+python scripts/01_extract/extract_google_trends.py
+
+# Use custom config file
+python scripts/01_extract/extract_google_trends.py --config configs/my_trends.yaml
+
+# Test mode (last 30 days only)
+python scripts/01_extract/extract_google_trends.py --test
+
+# Override keywords from command line (overrides config)
+python scripts/01_extract/extract_google_trends.py --keywords "inflation" "gas prices" "rent prices"
+
+# Override date range (overrides config)
+python scripts/01_extract/extract_google_trends.py --start-date 2015-10-28 --end-date 2025-10-24
+
+# Full extraction with aggressive retry settings (if hitting rate limits)
+python scripts/01_extract/extract_google_trends.py --start-date 2015-10-28 --end-date 2025-10-24 --throttle 10 --max-retries 8 --force
+
+# Override region (e.g., UK)
+python scripts/01_extract/extract_google_trends.py --geo UK
+
+# Override throttling and retry settings
+python scripts/01_extract/extract_google_trends.py --throttle 10.0 --max-retries 8
+
+# Force re-download even if file exists
+python scripts/01_extract/extract_google_trends.py --force
+```
+
+**Features:**
+- ✅ Daily aggregate data
+- ✅ US region by default (configurable)
+- ✅ Automatic chunking for date ranges > 270 days
+- ✅ **Progress tracking** - Shows chunk progress, percentage, and elapsed time
+- ✅ **Exponential backoff retry** - Automatically retries on 429 rate limits (5 retries default)
+- ✅ **Smart throttling** - 5s default with random jitter to avoid rate limiting
+- ✅ **Countdown timers** - Shows remaining wait time during long retries
+- ✅ Handles API errors gracefully
+- ✅ Skip existing files unless `--force` is used
+
+**Configuration File (`configs/google_trends.yaml`):**
+- **Keywords**: List of search terms to track (default: inflation, food prices, gas prices, rent prices, etc.)
+- **Date range**: Start/end dates (default: 2015-10-28 to today)
+- **Region**: Geographic area (default: US)
+- **API settings**: Throttle and retry parameters
+
+**Command-line arguments override config file settings.**
+
+**Output:**
+- `data/raw/google_trends.parquet`
+- Columns: `date` + one column per keyword (0-100 scale)
+
+**Requirements:**
+- Internet connection
+- No authentication needed (public API)
+
+**Progress Output Example:**
+```
+[Chunk 3/15] (20.0% complete)
+Fetching data for: 2020-07-01 2021-03-27
+Elapsed time: 45.2s
+  ✓ Success. Waiting 5.3s before next request...
+```
+
+**Notes:**
+- Google Trends data is relative (0-100 scale)
+- Daily data limited to 270 days per request (auto-handled)
+- Progress tracking shows chunk number, percentage, and elapsed time
+- If rate limited (429 error), automatically retries with exponential backoff
+- For long date ranges, expect 10-30 minutes of runtime
+- Increase `--throttle` if you continue to hit rate limits
+
+---
+
+### `01_extract/verify_ticker_extraction.py`
 
 **Verify extracted raw stock data quality**
 
@@ -58,13 +157,13 @@ Run data quality checks on extracted raw OHLCV data from Phase 1.
 **Usage:**
 ```bash
 # Full verification
-python scripts/01_extract/verify_extraction.py
+python scripts/01_extract/verify_ticker_extraction.py
 
-# Check specific ticker with detailed stats
-python scripts/01_extract/verify_extraction.py --ticker SPY
+# Check specific ticker with detailed stats (includes date range)
+python scripts/01_extract/verify_ticker_extraction.py --ticker SPY
 
 # Verify custom file
-python scripts/01_extract/verify_extraction.py --file data/raw/custom.parquet
+python scripts/01_extract/verify_ticker_extraction.py --file data/raw/custom.parquet
 ```
 
 **Checks:**
@@ -156,24 +255,73 @@ python scripts/02_features/verify_features.py --data-dir data/processed_v2
 
 ---
 
-## Phase 3: Model Training
+## Phase 3: Model Training & Testing
 
-### `03_training/test_architectures.py`
+### `03_training/inspect_model.py`
 
-**Test model architectures**
+**Quick model architecture inspection (no data required)**
 
-Quick script to test MLP, LSTM, and Transformer architectures before full training.
+View model architecture, layer details, and parameter counts without running a forward pass.
 
 **Usage:**
 ```bash
-python scripts/03_training/test_architectures.py
+# Inspect LSTM model
+python scripts/03_training/inspect_model.py --model-type lstm
+
+# Inspect MLP with custom config
+python scripts/03_training/inspect_model.py --model-type mlp --config configs/mlp_multi_horizon.yaml
+
+# Custom input shape
+python scripts/03_training/inspect_model.py --model-type lstm --seq-len 60 --n-features 200
+```
+
+**Features:**
+- ✅ Fast (no forward pass)
+- ✅ Shows model.summary()
+- ✅ Counts trainable/non-trainable parameters
+- ✅ Works with any config file
+
+**When to use:**
+- Quick architecture overview
+- Comparing model sizes
+- Documentation/reporting
+
+---
+
+### `03_training/test_architectures.py`
+
+**Integration test with dummy data forward pass**
+
+Test model can compile, run predictions, and produce correct output shapes using random dummy data.
+
+**Usage:**
+```bash
+# Test LSTM with real feature count
+python scripts/03_training/test_architectures.py --model-type lstm --n-features 163
+
+# Test multi-horizon MLP
+python scripts/03_training/test_architectures.py --model-type mlp --config configs/mlp_multi_horizon.yaml
+
+# Custom test parameters
+python scripts/03_training/test_architectures.py --model-type gru --seq-len 60 --batch-size 10
 ```
 
 **Tests:**
-- Model instantiation
-- Forward pass with correct shapes
-- Gradient flow check
-- Quick overfitting test on small batch
+- ✅ Model instantiation
+- ✅ Forward pass with random data
+- ✅ Output shape validation
+- ✅ Multi-horizon output verification
+
+**Important:** Uses **dummy random data**, not real parquet data. For testing architecture only.
+
+**Does NOT:**
+- ❌ Does NOT use real data from parquet files
+- ❌ Does NOT train or evaluate
+
+**When to use:**
+- Before starting expensive training
+- After modifying model architecture
+- Debugging shape mismatches
 
 ---
 

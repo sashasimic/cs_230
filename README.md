@@ -491,39 +491,150 @@ docker-compose up tensorboard
 
 ### Quick Start Workflow
 
-```bash
-# Phase 1: Extract data from BigQuery
-python scripts/01_extract/extract_from_bigquery.py --check-availability
-python scripts/01_extract/extract_from_bigquery.py
+#### Prerequisites: GCP Authentication
 
-# Phase 2: Build features
+**First-time setup** - Authenticate with Google Cloud for BigQuery access:
+
+```bash
+# Option 1: Using service account key (recommended for Docker)
+export GOOGLE_APPLICATION_CREDENTIALS="$(pwd)/credentials/gcp-key.json"
+
+# Option 2: Using your Google account (no key needed)
+gcloud auth application-default login
+gcloud config set project YOUR_PROJECT_ID
+```
+
+**📚 See [GCP Setup](#google-cloud-platform-gcp-setup) for detailed authentication instructions.**
+
+---
+
+#### Enter Docker Environment
+
+**All commands below should be run inside the Docker container:**
+
+```bash
+# Start and enter the Docker container
+docker-compose run --rm trainer bash
+
+# You should now see a prompt like: root@containerid:/app#
+# All subsequent commands run inside this container
+```
+---
+
+#### Complete Pipeline
+
+```bash
+# ============================================================
+# Phase 1a: Extract Ticker Data from BigQuery
+# ============================================================
+
+# Check data availability for configured tickers
+python scripts/01_extract/extract_tickers.py --check-availability
+
+# Extract all tickers to parquet
+python scripts/01_extract/extract_tickers.py
+
+# Verify ticker extraction
+python scripts/01_extract/verify_ticker_extraction.py
+python scripts/01_extract/verify_ticker_extraction.py --ticker SPY  # Detailed analysis
+
+# ============================================================
+# Phase 1b: Extract Google Trends Data
+# ============================================================
+
+# Test with last 30 days (quick test)
+python scripts/01_extract/extract_google_trends.py --test
+
+# Full extraction with aggressive retry settings (if hitting rate limits)
+python scripts/01_extract/extract_google_trends.py
+
+# Verify Google Trends extraction
+python scripts/01_extract/verify_google_trends.py
+
+# ============================================================
+# Phase 2: Build Features
+# ============================================================
+
+# Build features with default config
 python scripts/02_features/build_features.py
+
+# Verify processed features
 python scripts/02_features/verify_features.py
 
-# Phase 3: Train models (coming soon)
-python train.py --model-type lstm
+# ============================================================
+# Phase 3: Train Multi-Horizon Models
+# ============================================================
+
+# Train multi-horizon MLP model
+python train.py --model-type mlp --config configs/mlp_multi_horizon.yaml --epochs 30
+
+# ============================================================
+# Monitor Training (in separate terminal)
+# ============================================================
+
+# View TensorBoard
+docker-compose up tensorboard
+# Open: http://localhost:6006
 ```
 
 **📚 For detailed usage of each script, see [scripts/README.md](scripts/README.md)**
 
 ---
 
-### Phase 1: Extract Data from BigQuery
+### Phase 1: Data Extraction
+
+**Phase 1 extracts two types of data:**
+1. **Ticker/Stock Data** from BigQuery (OHLCV price data)
+2. **Google Trends Data** (search interest for inflation-related keywords)
+
+#### Phase 1a: Extract Ticker Data from BigQuery
 
 **Extract real stock/index data from your BigQuery table.**
 
+**Configuration:** `configs/tickers.yaml` - Edit to specify tickers, date range, and BigQuery details.
+
 ```bash
 # Check data availability first
-python scripts/01_extract/extract_from_bigquery.py --check-availability
+python scripts/01_extract/extract_tickers.py --check-availability
 
-# Extract all configured tickers
-python scripts/01_extract/extract_from_bigquery.py
+# Extract all configured tickers (uses date range from config or default 2015-10-28 to today)
+python scripts/01_extract/extract_tickers.py
+
+# Extract with custom date range
+python scripts/01_extract/extract_tickers.py --start-date 2015-10-28 --end-date 2025-10-24
 
 # Verify extraction
-python scripts/01_extract/verify_extraction.py
+python scripts/01_extract/verify_ticker_extraction.py
+
+# Verify specific ticker with date range
+python scripts/01_extract/verify_ticker_extraction.py --ticker SPY
 ```
 
 **Output:** `data/raw/stocks_raw.parquet` - Wide-format parquet with one row per date, columns for each ticker's OHLCV data.
+
+#### Phase 1b: Extract Google Trends Data
+
+**Extract search interest data for inflation indicators.**
+
+**Configuration:** `configs/google_trends.yaml` - Edit to specify keywords, date range, and region.
+
+```bash
+# Quick test (last 30 days)
+python scripts/01_extract/extract_google_trends.py --test
+
+# Full extraction with retry settings for rate limiting
+python scripts/01_extract/extract_google_trends.py \
+  --start-date 2015-10-28 \
+  --end-date 2025-10-24 \
+  --throttle 10 \
+  --max-retries 8 \
+  --force
+
+# Verify Google Trends extraction
+python scripts/01_extract/verify_google_trends.py
+```
+
+**Output:** `data/raw/google_trends.parquet` - Daily search interest (0-100 scale) for keywords like "inflation", "food prices".
 
 **📚 For detailed options (ticker management, custom dates, verification), see [scripts/README.md](scripts/README.md#phase-1-data-extraction)**
 
@@ -591,18 +702,36 @@ python scripts/dummy/generate_dummy_data.py --n-samples 50000 --n-features 20
 | Medium (10K-100K) | 80/10/10 | `--train-ratio 0.8 --val-ratio 0.1` |
 | Large (>100K) | 90/5/5 | `--train-ratio 0.9 --val-ratio 0.05` |
 
-### Training Models
+### Phase 3: Training Multi-Horizon Models
 
-**Basic training:**
+**Train models to predict multiple future time horizons (1M, 3M, 6M forward returns).**
+
+#### Multi-Horizon Training (Recommended)
 
 ```bash
-# Train with default config (LSTM, 100 epochs)
-python train.py
+# Train LSTM with multi-horizon config
+python train.py --model-type lstm --config configs/mlp_multi_horizon.yaml --epochs 50
 
-# Train specific model
-python train.py --model-type mlp --epochs 30 --batch-size 64
+# Train MLP with multi-horizon config
+python train.py --model-type mlp --config configs/mlp_multi_horizon.yaml --epochs 30
 
-# Override multiple parameters
+# Train Transformer with multi-horizon config
+python train.py --model-type transformer --config configs/mlp_multi_horizon.yaml --epochs 100
+```
+
+**Multi-horizon models predict:**
+- **1M horizon**: 1-month forward returns
+- **3M horizon**: 3-month forward returns  
+- **6M horizon**: 6-month forward returns
+- **Weighted target**: Configurable blend (default: 60% SPY + 40% QQQ)
+
+#### Basic Training (Single Horizon)
+
+```bash
+# Train with default config (LSTM, single target)
+python train.py --model-type lstm --epochs 50
+
+# Override parameters
 python train.py \
   --model-type transformer \
   --epochs 100 \
@@ -610,16 +739,10 @@ python train.py \
   --batch-size 32
 ```
 
-**Using existing data:**
+#### Quick Testing with Dummy Data
 
 ```bash
-# Use data in data/dummy/ (configured in config.yaml)
-python train.py --model-type lstm --epochs 50
-```
-
-**Generate fresh data each run:**
-
-```bash
+# Generate synthetic data and train (no BigQuery needed)
 python train.py --generate-dummy --model-type lstm --epochs 30
 ```
 

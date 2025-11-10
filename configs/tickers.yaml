@@ -85,7 +85,7 @@ tickers:
 
 # Date range for extraction
 date_range:
-  start_date: '2014-01-01'  # 10 years of data
+  start_date: '2015-10-28'  # 10 years of data
   end_date: null  # null = use today's date
 
 # BigQuery configuration
