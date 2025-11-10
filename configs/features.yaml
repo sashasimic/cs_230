@@ -2,6 +2,16 @@
 # This config defines how to transform raw data into ML-ready features
 
 # ============================================================
+# DATE RANGE: Filter raw data to specific dates
+# ============================================================
+date_range:
+  # Set to null to use all available data
+  # Or specify dates to filter (format: YYYY-MM-DD)
+  start_date: '2015-10-28'  # Earliest date across all sources
+  end_date: '2025-10-24'    # Latest date to include
+  # This ensures all data sources are aligned to the same date range
+
+# ============================================================
 # INPUT: Data Sources Configuration
 # ============================================================
 data_sources:
@@ -106,6 +116,55 @@ data_sources:
       # RSI (Relative Strength Index)
       # Measures momentum of search interest (0-100 scale)
       # >70 = overbought (extreme high interest), <30 = oversold (low interest)
+      rsi:
+        enabled: true
+        period: 14  # Standard RSI period
+  
+  # GDELT news sentiment and event data
+  gdelt:
+    enabled: true  # Set to false to exclude GDELT
+    path: 'data/raw/gdelt_raw_weighted_daily.parquet'
+    
+    # GDELT columns to use as features
+    # WeightedAvg_Tone: Sentiment tone (-10 to +10, negative = bad news)
+    # WeightedAvg_Polarity: Strength of sentiment (higher = more extreme)
+    # NumSources: Number of news sources (measure of attention)
+    columns:
+      - WeightedAvg_Tone
+      - WeightedAvg_Polarity
+      - NumSources
+    
+    # GDELT-specific feature engineering
+    features:
+      # Use raw values
+      raw_values: true
+      
+      # Lagged values (past sentiment)
+      lags:
+        enabled: true
+        periods: [1, 5, 10, 21]  # 1-day, 1-week, 2-week, 1-month lags
+      
+      # Rolling averages to smooth sentiment trends
+      rolling_average:
+        enabled: true
+        windows: [5, 10, 21]  # 1-week, 2-week, 1-month averages
+      
+      # Rate of change (sentiment momentum)
+      rate_of_change:
+        enabled: true
+        periods: [5, 10, 21]  # Change over 1-week, 2-week, 1-month
+      
+      # Z-score (normalized deviation from mean)
+      z_score:
+        enabled: true
+        window: 21  # Rolling z-score over 1 month
+      
+      # Volatility (sentiment stability)
+      volatility:
+        enabled: true
+        windows: [5, 10, 21]  # Sentiment volatility
+      
+      # RSI for sentiment momentum
       rsi:
         enabled: true
         period: 14  # Standard RSI period

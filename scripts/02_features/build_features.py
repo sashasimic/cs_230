@@ -58,6 +58,21 @@ def load_raw_data(file_path: str) -> pd.DataFrame:
         raise FileNotFoundError(f"Raw data file not found: {file_path}")
     
     df = pd.read_parquet(file_path)
+    
+    # Handle different date column names (date, DATE, Date)
+    date_col = None
+    for possible_name in ['date', 'DATE', 'Date']:
+        if possible_name in df.columns:
+            date_col = possible_name
+            break
+    
+    if date_col is None:
+        raise ValueError(f"No date column found in {file_path}. Columns: {df.columns.tolist()}")
+    
+    # Normalize to lowercase 'date'
+    if date_col != 'date':
+        df = df.rename(columns={date_col: 'date'})
+    
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date').reset_index(drop=True)
     
@@ -73,23 +88,39 @@ def load_data_sources(config: dict) -> pd.DataFrame:
     
     data_sources_config = config['data_sources']
     dfs = []
+    source_num = 1
+    total_sources = sum([1 for k in ['stocks', 'google_trends', 'gdelt'] 
+                         if data_sources_config.get(k, {}).get('enabled', k == 'stocks')])
     
     # Load stocks data
     if data_sources_config.get('stocks', {}).get('enabled', True):
         stocks_path = data_sources_config['stocks']['path']
-        logger.info(f"\n[1/2] Loading stocks data from {stocks_path}")
+        logger.info(f"\n[{source_num}/{total_sources}] Loading stocks data from {stocks_path}")
         stocks_df = load_raw_data(stocks_path)
         dfs.append(stocks_df)
+        source_num += 1
     
     # Load Google Trends data
     if data_sources_config.get('google_trends', {}).get('enabled', False):
         trends_path = data_sources_config['google_trends']['path']
-        logger.info(f"\n[2/2] Loading Google Trends data from {trends_path}")
+        logger.info(f"\n[{source_num}/{total_sources}] Loading Google Trends data from {trends_path}")
         if os.path.exists(trends_path):
             trends_df = load_raw_data(trends_path)
             dfs.append(trends_df)
         else:
             logger.warning(f"Google Trends data not found at {trends_path}, skipping")
+        source_num += 1
+    
+    # Load GDELT data
+    if data_sources_config.get('gdelt', {}).get('enabled', False):
+        gdelt_path = data_sources_config['gdelt']['path']
+        logger.info(f"\n[{source_num}/{total_sources}] Loading GDELT data from {gdelt_path}")
+        if os.path.exists(gdelt_path):
+            gdelt_df = load_raw_data(gdelt_path)
+            dfs.append(gdelt_df)
+        else:
+            logger.warning(f"GDELT data not found at {gdelt_path}, skipping")
+        source_num += 1
     
     # Merge data sources on date
     if len(dfs) == 0:
@@ -105,6 +136,39 @@ def load_data_sources(config: dict) -> pd.DataFrame:
         logger.info(f"✓ Merged {len(merged_df)} rows × {len(merged_df.columns)} columns")
     
     return merged_df
+
+
+def filter_date_range(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Filter data to specified date range."""
+    date_range_config = config.get('date_range', {})
+    start_date = date_range_config.get('start_date')
+    end_date = date_range_config.get('end_date')
+    
+    if start_date is None and end_date is None:
+        logger.info("No date range filter specified, using all available data")
+        return df
+    
+    original_len = len(df)
+    original_start = df['date'].min()
+    original_end = df['date'].max()
+    
+    # Apply filters
+    if start_date is not None:
+        start_date = pd.to_datetime(start_date)
+        df = df[df['date'] >= start_date]
+    
+    if end_date is not None:
+        end_date = pd.to_datetime(end_date)
+        df = df[df['date'] <= end_date]
+    
+    df = df.reset_index(drop=True)
+    
+    logger.info("\nFiltering to date range...")
+    logger.info(f"  Original: {original_start.date()} to {original_end.date()} ({original_len} rows)")
+    logger.info(f"  Filtered: {df['date'].min().date()} to {df['date'].max().date()} ({len(df)} rows)")
+    logger.info(f"  Removed: {original_len - len(df)} rows")
+    
+    return df
 
 
 def add_google_trends_features(df: pd.DataFrame, config: dict) -> pd.DataFrame:
@@ -170,6 +234,72 @@ def add_google_trends_features(df: pd.DataFrame, config: dict) -> pd.DataFrame:
             df[f"{keyword}_rsi_{period}d"] = rsi
     
     logger.info(f"✓ Google Trends features expanded to {len(df.columns)} columns")
+    
+    return df
+
+
+def add_gdelt_features(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Add GDELT news sentiment-specific features."""
+    if not config['data_sources'].get('gdelt', {}).get('enabled', False):
+        return df
+    
+    gdelt_config = config['data_sources']['gdelt']
+    gdelt_columns = gdelt_config['columns']
+    features_config = gdelt_config['features']
+    
+    # Check if GDELT columns exist
+    gdelt_cols_found = [col for col in gdelt_columns if col in df.columns]
+    if not gdelt_cols_found:
+        logger.warning("No GDELT columns found")
+        return df
+    
+    logger.info(f"\nAdding GDELT features for {len(gdelt_cols_found)} columns...")
+    
+    for col in gdelt_cols_found:
+        # Lagged values
+        if features_config.get('lags', {}).get('enabled', True):
+            for lag in features_config['lags']['periods']:
+                df[f"{col}_lag_{lag}d"] = df[col].shift(lag)
+        
+        # Rolling averages
+        if features_config.get('rolling_average', {}).get('enabled', True):
+            for window in features_config['rolling_average']['windows']:
+                df[f"{col}_ma_{window}d"] = df[col].rolling(window=window, min_periods=1).mean()
+        
+        # Rate of change
+        if features_config.get('rate_of_change', {}).get('enabled', True):
+            for period in features_config['rate_of_change']['periods']:
+                df[f"{col}_roc_{period}d"] = (df[col] - df[col].shift(period)) / (df[col].shift(period).abs() + 1e-10)
+        
+        # Z-score (normalized deviation)
+        if features_config.get('z_score', {}).get('enabled', True):
+            window = features_config['z_score']['window']
+            rolling_mean = df[col].rolling(window=window, min_periods=1).mean()
+            rolling_std = df[col].rolling(window=window, min_periods=1).std()
+            df[f"{col}_zscore_{window}d"] = (df[col] - rolling_mean) / (rolling_std + 1e-10)
+        
+        # Volatility (rolling standard deviation of changes)
+        if features_config.get('volatility', {}).get('enabled', True):
+            changes = df[col].diff()
+            for window in features_config['volatility']['windows']:
+                df[f"{col}_volatility_{window}d"] = changes.rolling(window=window, min_periods=1).std()
+        
+        # RSI (Relative Strength Index)
+        if features_config.get('rsi', {}).get('enabled', True):
+            period = features_config['rsi']['period']
+            delta = df[col].diff()
+            
+            gain = delta.where(delta > 0, 0)
+            loss = -delta.where(delta < 0, 0)
+            
+            avg_gain = gain.rolling(window=period, min_periods=1).mean()
+            avg_loss = loss.rolling(window=period, min_periods=1).mean()
+            
+            rs = avg_gain / (avg_loss + 1e-10)
+            rsi = 100 - (100 / (1 + rs))
+            df[f"{col}_rsi_{period}d"] = rsi
+    
+    logger.info(f"✓ GDELT features expanded to {len(df.columns)} columns")
     
     return df
 
@@ -417,12 +547,39 @@ def select_feature_columns(df: pd.DataFrame, config: dict) -> List[str]:
             if any(suffix in col for suffix in ['_lag_', '_ma_', '_roc_', '_zscore_', '_volatility_', '_rsi_']) and not any(col.startswith(f"{t}_") for t in tickers):
                 feature_cols.append(col)
     
+    # Add GDELT features (if enabled)
+    if config['data_sources'].get('gdelt', {}).get('enabled', False):
+        gdelt_config = config['data_sources']['gdelt']
+        gdelt_columns = gdelt_config['columns']
+        gdelt_features = gdelt_config['features']
+        
+        for col in df.columns:
+            # Include raw GDELT values
+            if gdelt_features.get('raw_values', True):
+                if col in gdelt_columns:
+                    feature_cols.append(col)
+            
+            # Include derived GDELT features (lags, MA, ROC, z-score, volatility, RSI)
+            if any(gdelt_col in col for gdelt_col in gdelt_columns):
+                if any(suffix in col for suffix in ['_lag_', '_ma_', '_roc_', '_zscore_', '_volatility_', '_rsi_']):
+                    feature_cols.append(col)
+    
     # Remove duplicates while preserving order
     feature_cols = list(dict.fromkeys(feature_cols))
     
+    # Count features by source
+    stock_features = sum(1 for c in feature_cols if any(c.startswith(f'{t}_') for t in tickers))
+    
+    # Get GDELT column names for counting
+    gdelt_columns = config['data_sources'].get('gdelt', {}).get('columns', [])
+    gdelt_features_count = sum(1 for c in feature_cols if any(gdelt_col in c for gdelt_col in gdelt_columns))
+    
+    trends_features_count = len(feature_cols) - stock_features - gdelt_features_count
+    
     logger.info(f"Selected {len(feature_cols)} feature columns")
-    logger.info(f"  Stock features: {sum(1 for c in feature_cols if any(c.startswith(f'{t}_') for t in tickers))}")
-    logger.info(f"  Trends features: {sum(1 for c in feature_cols if not any(c.startswith(f'{t}_') for t in tickers) and c != 'date')}")
+    logger.info(f"  Stock features: {stock_features}")
+    logger.info(f"  Google Trends features: {trends_features_count}")
+    logger.info(f"  GDELT features: {gdelt_features_count}")
     
     return feature_cols
 
@@ -629,8 +786,14 @@ def main():
     # Load raw data from multiple sources
     df = load_data_sources(config)
     
+    # Filter to specified date range
+    df = filter_date_range(df, config)
+    
     # Add Google Trends features (if enabled)
     df = add_google_trends_features(df, config)
+    
+    # Add GDELT features (if enabled)
+    df = add_gdelt_features(df, config)
     
     # Add stock technical indicators
     tickers = config['data_sources']['stocks']['tickers']
