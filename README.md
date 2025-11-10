@@ -474,6 +474,10 @@ open logs/plots/*_history.png
 ### Docker
 
 ```bash
+
+# Build image (first time or after Dockerfile changes)
+docker-compose build
+
 # Start interactive container
 docker-compose run --rm trainer bash
 
@@ -505,6 +509,13 @@ gcloud config set project YOUR_PROJECT_ID
 ```
 
 **📚 See [GCP Setup](#google-cloud-platform-gcp-setup) for detailed authentication instructions.**
+
+#### Prerequisites: Docker
+
+```bash
+
+# Build image (first time or after Dockerfile changes)
+docker-compose build
 
 ---
 
