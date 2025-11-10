@@ -51,7 +51,7 @@ def load_config(config_path: str) -> dict:
 
 
 def load_raw_data(file_path: str) -> pd.DataFrame:
-    """Load raw OHLCV parquet file."""
+    """Load raw parquet file."""
     logger.info(f"Loading raw data from {file_path}")
     
     if not os.path.exists(file_path):
@@ -63,6 +63,113 @@ def load_raw_data(file_path: str) -> pd.DataFrame:
     
     logger.info(f"✓ Loaded {len(df)} rows × {len(df.columns)} columns")
     logger.info(f"  Date range: {df['date'].min()} to {df['date'].max()}")
+    
+    return df
+
+
+def load_data_sources(config: dict) -> pd.DataFrame:
+    """Load and merge multiple data sources."""
+    logger.info("Loading data sources...")
+    
+    data_sources_config = config['data_sources']
+    dfs = []
+    
+    # Load stocks data
+    if data_sources_config.get('stocks', {}).get('enabled', True):
+        stocks_path = data_sources_config['stocks']['path']
+        logger.info(f"\n[1/2] Loading stocks data from {stocks_path}")
+        stocks_df = load_raw_data(stocks_path)
+        dfs.append(stocks_df)
+    
+    # Load Google Trends data
+    if data_sources_config.get('google_trends', {}).get('enabled', False):
+        trends_path = data_sources_config['google_trends']['path']
+        logger.info(f"\n[2/2] Loading Google Trends data from {trends_path}")
+        if os.path.exists(trends_path):
+            trends_df = load_raw_data(trends_path)
+            dfs.append(trends_df)
+        else:
+            logger.warning(f"Google Trends data not found at {trends_path}, skipping")
+    
+    # Merge data sources on date
+    if len(dfs) == 0:
+        raise ValueError("No data sources enabled in config")
+    elif len(dfs) == 1:
+        merged_df = dfs[0]
+    else:
+        logger.info("\nMerging data sources on date...")
+        merged_df = dfs[0]
+        for df in dfs[1:]:
+            merged_df = pd.merge(merged_df, df, on='date', how='outer')
+        merged_df = merged_df.sort_values('date').reset_index(drop=True)
+        logger.info(f"✓ Merged {len(merged_df)} rows × {len(merged_df.columns)} columns")
+    
+    return merged_df
+
+
+def add_google_trends_features(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Add Google Trends-specific features."""
+    if not config['data_sources'].get('google_trends', {}).get('enabled', False):
+        return df
+    
+    trends_config = config['data_sources']['google_trends']['features']
+    
+    # Find Google Trends columns (exclude 'date' and stock columns)
+    trends_cols = [col for col in df.columns 
+                   if col not in ['date'] 
+                   and not any(x in col for x in ['_open', '_high', '_low', '_close', '_volume', '_vwap'])]
+    
+    if not trends_cols:
+        logger.warning("No Google Trends columns found")
+        return df
+    
+    logger.info(f"\nAdding Google Trends features for {len(trends_cols)} keywords...")
+    
+    for keyword in trends_cols:
+        # Lagged values
+        if trends_config.get('lags', {}).get('enabled', True):
+            for lag in trends_config['lags']['periods']:
+                df[f"{keyword}_lag_{lag}d"] = df[keyword].shift(lag)
+        
+        # Rolling averages
+        if trends_config.get('rolling_average', {}).get('enabled', True):
+            for window in trends_config['rolling_average']['windows']:
+                df[f"{keyword}_ma_{window}d"] = df[keyword].rolling(window=window, min_periods=1).mean()
+        
+        # Rate of change
+        if trends_config.get('rate_of_change', {}).get('enabled', True):
+            for period in trends_config['rate_of_change']['periods']:
+                df[f"{keyword}_roc_{period}d"] = (df[keyword] - df[keyword].shift(period)) / (df[keyword].shift(period) + 1e-10)
+        
+        # Z-score (normalized deviation)
+        if trends_config.get('z_score', {}).get('enabled', True):
+            window = trends_config['z_score']['window']
+            rolling_mean = df[keyword].rolling(window=window, min_periods=1).mean()
+            rolling_std = df[keyword].rolling(window=window, min_periods=1).std()
+            df[f"{keyword}_zscore_{window}d"] = (df[keyword] - rolling_mean) / (rolling_std + 1e-10)
+        
+        # Volatility (rolling standard deviation of changes)
+        if trends_config.get('volatility', {}).get('enabled', False):
+            changes = df[keyword].diff()
+            for window in trends_config['volatility']['windows']:
+                df[f"{keyword}_volatility_{window}d"] = changes.rolling(window=window, min_periods=1).std()
+        
+        # RSI (Relative Strength Index)
+        if trends_config.get('rsi', {}).get('enabled', False):
+            period = trends_config['rsi']['period']
+            delta = df[keyword].diff()
+            
+            gain = delta.where(delta > 0, 0)
+            loss = -delta.where(delta < 0, 0)
+            
+            avg_gain = gain.rolling(window=period, min_periods=1).mean()
+            avg_loss = loss.rolling(window=period, min_periods=1).mean()
+            
+            rs = avg_gain / (avg_loss + 1e-10)
+            rsi = 100 - (100 / (1 + rs))
+            df[f"{keyword}_rsi_{period}d"] = rsi
+    
+    logger.info(f"✓ Google Trends features expanded to {len(df.columns)} columns")
     
     return df
 
@@ -168,10 +275,10 @@ def compute_momentum(df: pd.DataFrame, ticker: str, periods: List[int]) -> pd.Da
 
 
 def add_technical_indicators(df: pd.DataFrame, tickers: List[str], config: dict) -> pd.DataFrame:
-    """Add all configured technical indicators."""
-    logger.info("Computing technical indicators...")
+    """Add technical indicators for all tickers."""
+    logger.info(f"Computing technical indicators for {len(tickers)} tickers...")
     
-    indicators_config = config['input_features']['technical_indicators']
+    indicators_config = config['data_sources']['stocks']['technical_indicators']
     
     for ticker in tickers:
         # Returns
@@ -273,27 +380,49 @@ def create_targets(df: pd.DataFrame, config: dict) -> pd.DataFrame:
 
 def select_feature_columns(df: pd.DataFrame, config: dict) -> List[str]:
     """Select feature columns based on config."""
-    input_config = config['input_features']
-    tickers = input_config['tickers']
-    columns = input_config['columns']
+    stocks_config = config['data_sources']['stocks']
+    tickers = stocks_config['tickers']
+    columns = stocks_config['columns']
     
     feature_cols = []
     
-    # Add raw OHLCV columns
+    # Add raw OHLCV columns for stocks
     for ticker in tickers:
         for col in columns:
             col_name = f"{ticker}_{col}"
             if col_name in df.columns:
                 feature_cols.append(col_name)
     
-    # Add all technical indicator columns
+    # Add stock technical indicator columns
     for col in df.columns:
         if any(indicator in col for indicator in ['_return_', '_log_return_', '_volatility_', 
                                                    '_sma_', '_ema_', '_ma_dev_', '_rsi_', '_momentum_']):
             if any(col.startswith(f"{ticker}_") for ticker in tickers):
                 feature_cols.append(col)
     
+    # Add Google Trends features (if enabled)
+    if config['data_sources'].get('google_trends', {}).get('enabled', False):
+        trends_features = config['data_sources']['google_trends']['features']
+        
+        for col in df.columns:
+            # Include raw trends values
+            if trends_features.get('raw_values', True):
+                # Raw keyword columns (no suffix)
+                if col not in ['date'] and not any(x in col for x in ['_open', '_high', '_low', '_close', '_volume', '_vwap', '_lag_', '_ma_', '_roc_', '_zscore_', '_volatility_', '_rsi_']):
+                    # Check if it's a trends column by seeing if it has any derived features
+                    if any(f"{col}_lag_" in c or f"{col}_ma_" in c for c in df.columns):
+                        feature_cols.append(col)
+            
+            # Include derived Google Trends features
+            if any(suffix in col for suffix in ['_lag_', '_ma_', '_roc_', '_zscore_', '_volatility_', '_rsi_']) and not any(col.startswith(f"{t}_") for t in tickers):
+                feature_cols.append(col)
+    
+    # Remove duplicates while preserving order
+    feature_cols = list(dict.fromkeys(feature_cols))
+    
     logger.info(f"Selected {len(feature_cols)} feature columns")
+    logger.info(f"  Stock features: {sum(1 for c in feature_cols if any(c.startswith(f'{t}_') for t in tickers))}")
+    logger.info(f"  Trends features: {sum(1 for c in feature_cols if not any(c.startswith(f'{t}_') for t in tickers) and c != 'date')}")
     
     return feature_cols
 
@@ -497,11 +626,14 @@ def main():
     logger.info("PHASE 2: FEATURE ENGINEERING")
     logger.info("=" * 70)
     
-    # Load raw data
-    df = load_raw_data(config['data']['raw_data_path'])
+    # Load raw data from multiple sources
+    df = load_data_sources(config)
     
-    # Add technical indicators
-    tickers = config['input_features']['tickers']
+    # Add Google Trends features (if enabled)
+    df = add_google_trends_features(df, config)
+    
+    # Add stock technical indicators
+    tickers = config['data_sources']['stocks']['tickers']
     df = add_technical_indicators(df, tickers, config)
     
     # Create targets

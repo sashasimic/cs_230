@@ -1,75 +1,121 @@
 # Phase 2: Feature Engineering Configuration
-# This config defines how to transform raw OHLCV data into ML-ready features
+# This config defines how to transform raw data into ML-ready features
 
-# Input/Output Configuration
-data:
-  # Input: raw parquet file from Phase 1
-  raw_data_path: 'data/raw/stocks_raw.parquet'
+# ============================================================
+# INPUT: Data Sources Configuration
+# ============================================================
+data_sources:
+  # Stock/ticker OHLCV data from BigQuery
+  stocks:
+    enabled: true
+    path: 'data/raw/stocks_raw.parquet'
+    
+    # Which tickers to use as input features
+    tickers:
+      - SPY    # S&P 500 ETF
+      - QQQ    # Nasdaq 100 ETF
+      - IWM    # Russell 2000 ETF
+      - XLF    # Financials
+      - XLI    # Industrials
+      - XLY    # Consumer Discretionary
+      - XLK    # Technology
+      - XLE    # Energy
+      - XLB    # Materials
+      - XLP    # Consumer Staples
+      - XLV    # Healthcare
+      - XLU    # Utilities
+      - TLT    # 20+ Year Treasury
+      - IEF    # 7-10 Year Treasury
+      - GLD    # Gold
+      - DBC    # Commodities
+    
+    # Which OHLCV columns to use (for each ticker)
+    # Options: open, high, low, close, volume, vwap
+    columns:
+      - close  # Closing price (primary)
+      - volume # Trading volume
+    
+    # Technical indicators to compute (per ticker)
+    technical_indicators:
+      # Returns over different periods
+      returns:
+        enabled: true
+        periods: [1, 5, 21]  # 1-day, 1-week, 1-month
+      
+      # Log returns (more stable)
+      log_returns:
+        enabled: true
+        periods: [1, 5, 21]
+      
+      # Rolling volatility
+      volatility:
+        enabled: true
+        windows: [5, 21]  # 1-week, 1-month
+      
+      # Moving averages
+      moving_average:
+        enabled: true
+        windows: [5, 21, 63]  # 1-week, 1-month, 3-month
+        types: ['sma']  # 'sma' (simple) or 'ema' (exponential)
+      
+      # RSI (Relative Strength Index)
+      rsi:
+        enabled: true
+        period: 14
+      
+      # Momentum indicators
+      momentum:
+        enabled: true
+        periods: [5, 21]  # Price momentum over N days
   
-  # Output: processed train/val/test files
+  # Google Trends search interest data
+  google_trends:
+    enabled: true  # Set to false to exclude Google Trends
+    path: 'data/raw/google_trends.parquet'
+    
+    # Google Trends-specific feature engineering
+    features:
+      # Use raw search interest values (0-100)
+      raw_values: true
+      
+      # Lagged values (past search interest)
+      lags:
+        enabled: true
+        periods: [1, 7, 14, 21]  # 1-day, 1-week, 2-week, 1-month lags
+      
+      # Rolling averages to smooth trends
+      rolling_average:
+        enabled: true
+        windows: [7, 14, 21]  # 1-week, 2-week, 1-month averages
+      
+      # Rate of change (momentum in search interest)
+      rate_of_change:
+        enabled: true
+        periods: [7, 14, 21]  # Change over 1-week, 2-week, 1-month
+      
+      # Z-score (normalized deviation from mean)
+      z_score:
+        enabled: true
+        window: 21  # Rolling z-score over 1 month
+      
+      # Volatility (rolling standard deviation of changes)
+      volatility:
+        enabled: true
+        windows: [7, 14, 21]  # Stability of search interest
+      
+      # RSI (Relative Strength Index)
+      # Measures momentum of search interest (0-100 scale)
+      # >70 = overbought (extreme high interest), <30 = oversold (low interest)
+      rsi:
+        enabled: true
+        period: 14  # Standard RSI period
+
+# ============================================================
+# OUTPUT: Where to save processed features
+# ============================================================
+data:
   output_dir: 'data/processed'
   output_format: 'parquet'  # 'parquet' or 'csv'
-
-# Input Features: Which tickers/columns to use as predictors
-input_features:
-  # List of tickers to use as input features
-  # If empty, uses all available tickers from raw data
-  tickers:
-    - SPY    # S&P 500 ETF
-    - QQQ    # Nasdaq 100 ETF
-    - IWM    # Russell 2000 ETF
-    - XLF    # Financials
-    - XLI    # Industrials
-    - XLY    # Consumer Discretionary
-    - XLK    # Technology
-    - XLE    # Energy
-    - XLB    # Materials
-    - XLP    # Consumer Staples
-    - XLV    # Healthcare
-    - XLU    # Utilities
-    - TLT    # 20+ Year Treasury
-    - IEF    # 7-10 Year Treasury
-    - GLD    # Gold
-    - DBC    # Commodities
-  
-  # Which OHLCV columns to use (for each ticker)
-  # Options: open, high, low, close, volume, vwap
-  columns:
-    - close  # Closing price (primary)
-    - volume # Trading volume
-  
-  # Technical indicators to compute (per ticker)
-  technical_indicators:
-    # Returns over different periods
-    returns:
-      enabled: true
-      periods: [1, 5, 21]  # 1-day, 1-week, 1-month
-    
-    # Log returns (more stable)
-    log_returns:
-      enabled: true
-      periods: [1, 5, 21]
-    
-    # Rolling volatility
-    volatility:
-      enabled: true
-      windows: [5, 21]  # 1-week, 1-month
-    
-    # Moving averages
-    moving_average:
-      enabled: true
-      windows: [5, 21, 63]  # 1-week, 1-month, 3-month
-      types: ['sma']  # 'sma' (simple) or 'ema' (exponential)
-    
-    # RSI (Relative Strength Index)
-    rsi:
-      enabled: true
-      period: 14
-    
-    # Momentum indicators
-    momentum:
-      enabled: true
-      periods: [5, 21]  # Price momentum over N days
 
 # Output Targets: What to predict
 output_targets:
