@@ -35,6 +35,13 @@ from typing import List, Optional
 import pandas as pd
 from google.cloud import bigquery
 
+# Load environment variables
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # Add project root to path (two levels up from scripts/01_extract/)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
@@ -168,7 +175,7 @@ def extract_data(
     
     # Execute query
     logger.info("Executing BigQuery query...")
-    client = bigquery.Client(project=bq_config['project_id'])
+    client = bigquery.Client(project=project_id)
     
     try:
         df = client.query(query).to_dataframe()
@@ -299,9 +306,14 @@ def check_data_availability(config: dict, tickers: Optional[List[str]] = None) -
     """
     tickers = tickers or config['tickers']
     
-    # Build BigQuery table name
-    bq_config = config['bigquery']
-    table_name = f"{bq_config['project_id']}.{bq_config['dataset_id']}.{bq_config['table_name']}"
+    # Build BigQuery table name from environment variables
+    project_id = os.environ.get('GCP_PROJECT_ID')
+    dataset_id = os.environ.get('BQ_DATASET', 'raw_dataset')
+    table_name_only = os.environ.get('BQ_TABLE', 'raw_ohlcv')
+    table_name = f"{project_id}.{dataset_id}.{table_name_only}"
+    
+    if not project_id:
+        raise ValueError("GCP_PROJECT_ID environment variable not set")
     
     logger.info("=" * 80)
     logger.info("DATA AVAILABILITY CHECK")

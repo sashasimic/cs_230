@@ -89,29 +89,59 @@ tickers:
 
 # Date range for extraction
 date_range:
-  start_date: '2015-10-28'  # 10 years of data
-  end_date: null  # null = use today's date
+  start_date: '2015-11-12'  # 10 years of data
+  end_date: '2025-11-13'
+
+# Default indicators to compute
+indicators:
+  # Returns
+  - returns          # 1-period % return
+  - returns_5        # 5-period % return
+  - log_returns      # Log returns (stationary)
+  
+  # Volatility (market uncertainty)
+  - volatility_5     # Rolling std of returns (5-period)
+  # - volatility_10    # Rolling std of returns (10-period) (MISSING DATA)
+  - volatility_20    # Rolling std of returns (20-period)
+  # - atr_14           # Average True Range (MISSING DATA)
+  
+  # Momentum (trend strength)
+  - momentum_5       # Price momentum (5-period)
+  - momentum_10      # Price momentum (10-period)
+  # - roc_5            # Rate of Change % (5-period) (EXCLUDED)
+  # - roc_10           # Rate of Change % (10-period) (EXCLUDED)
+  
+  # Volume (buying/selling pressure)
+  - volume_ma_5      # Volume moving average (5-period)
+  - volume_ma_10     # Volume moving average (10-period)
+  - volume_ratio     # Volume strength indicator
+  # - obv              # On-Balance Volume (MISSING DATA)
+  
+  # Price Range
+  - high_low_ratio   # Daily price range ratio
+  
+  # Bollinger Bands
+  - bb_upper_20      # Bollinger Band upper
+  - bb_middle_20     # Bollinger Band middle
+  - bb_lower_20      # Bollinger Band lower
+  - bb_width         # Bollinger Band width
+  
+  # Simple Moving Averages
+  - sma_10
+  - sma_20
+  - sma_50
+  - sma_200
+  
+  # Exponential Moving Averages (MISSING DATA)
+  # - ema_12         # Fast EMA
+  # - ema_26         # Slow EMA
+  
+  # MACD (Moving Average Convergence Divergence) (MISSING DATA)
+  # - macd           # MACD line
+  # - macd_signal    # Signal line
+  # - macd_hist      # Histogram
 
 # BigQuery configuration
-bigquery:
-  project_id: 'sp-indicators'
-  dataset_id: 'macro_signals'
-  table_name: 'raw_ohlcv'
-
-# Output configuration
-output:
-  raw_data_path: 'data/raw/stocks_raw.parquet'
-  compression: 'snappy'
-  
-# Which columns to extract (set to null to get all)
-columns:
-  - ticker
-  - date
-  - open
-  - high
-  - low
-  - close
-  - volume
-  - vwap  # Volume weighted average price
-  # - transactions  # Uncomment if needed
-  # - timestamp     # Uncomment if needed
+# NOTE: All BigQuery settings (project_id, dataset_id, table_name) are
+# configured via environment variables in .env (see .env.example)
+# This allows for easier deployment across different environments

@@ -33,7 +33,7 @@ def extract_trends(
     Extract Google Trends data for specified keywords.
     
     Args:
-        keywords: List of search terms (e.g., ['inflation', 'food prices'])
+        keywords: List of search terms (e.g., ['spy', 'spy price'])
         start_date: Start date in 'YYYY-MM-DD' format
         end_date: End date in 'YYYY-MM-DD' format
         geo: Geographic region (default: 'US')
@@ -231,7 +231,7 @@ def load_config(config_path: str = 'configs/google_trends.yaml') -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Extract Google Trends data for inflation indicators',
+        description='Extract Google Trends data for SPY indicators',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -242,7 +242,7 @@ Examples:
   python scripts/01_extract/extract_google_trends.py --config configs/my_trends.yaml
   
   # Override keywords from command line
-  python scripts/01_extract/extract_google_trends.py --keywords "inflation" "gas prices" "rent"
+  python scripts/01_extract/extract_google_trends.py --keywords "spy" "spy price" "inflation"
   
   # Custom date range
   python scripts/01_extract/extract_google_trends.py --start-date 2015-10-28 --end-date 2025-10-24
@@ -313,7 +313,7 @@ Examples:
     
     # Use config values as defaults, command-line args override
     if config:
-        keywords = args.keywords if args.keywords else config.get('keywords', ['inflation', 'food prices'])
+        keywords = args.keywords if args.keywords else config.get('keywords', ['spy', 'spy price'])
         start_date = args.start_date if args.start_date else config.get('date_range', {}).get('start_date', '2015-10-28')
         end_date = args.end_date if args.end_date else config.get('date_range', {}).get('end_date')
         geo = args.geo if args.geo else config.get('region', {}).get('geo', 'US')
@@ -322,7 +322,7 @@ Examples:
         max_retries = args.max_retries if args.max_retries else config.get('api_settings', {}).get('max_retries', 5)
     else:
         # Fallback to hardcoded defaults if no config
-        keywords = args.keywords if args.keywords else ['inflation', 'food prices']
+        keywords = args.keywords if args.keywords else ['spy', 'spy price']
         start_date = args.start_date if args.start_date else '2015-10-28'
         end_date = args.end_date
         geo = args.geo if args.geo else 'US'
