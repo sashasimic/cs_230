@@ -1,0 +1,16 @@
+TIME-VARYING KNOWN FEATURES:
+  - month_sin
+  - month_cos
+  - is_weekend
+
+TIME-VARYING UNKNOWN FEATURES:
+  - close
+  - volume
+  - sma_50
+  - sma_200
+
+# Usage Example:
+# import numpy as np
+# X_train = np.load('data/processed/X_train.npy')
+# y_train = np.load('data/processed/y_train.npy')
+# ts_train = np.load('data/processed/ts_train.npy')

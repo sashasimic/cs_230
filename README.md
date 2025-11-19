@@ -1,6 +1,6 @@
-# CS230 Deep Learning Project - Time Series Regression
+# CS230 Deep Learning Project - Inflation Prediction with TFT
 
-**A modular TensorFlow/Keras framework for tabular time-series regression with support for multiple model architectures, BigQuery integration, and Google Cloud deployment.**
+**A PyTorch-based Temporal Fusion Transformer (TFT) for multi-horizon inflation forecasting with BigQuery integration and Google Cloud Vertex AI deployment.**
 
 ---
 
@@ -32,13 +32,14 @@
 
 ## 🎯 Overview
 
-This project provides a complete deep learning pipeline for time series regression tasks, designed for the CS230 Deep Learning course. It includes:
+This project implements a Temporal Fusion Transformer (TFT) for multi-horizon inflation prediction, designed for the CS230 Deep Learning course. It includes:
 
-- **3 Model Architectures**: MLP, LSTM, Transformer
-- **Flexible Data Pipeline**: Local CSV/Parquet, BigQuery, or dummy data generation
-- **Production-Ready**: Docker containerization, GCP integration, TensorBoard logging
-- **Modular Design**: Easy to extend with new models, data sources, or features
-- **Comprehensive Logging**: File logs, TensorBoard metrics, training plots
+- **PyTorch TFT Architecture**: LSTM encoder, multi-head attention, variable selection network
+- **Multi-Horizon Forecasting**: Predict multiple time steps ahead simultaneously
+- **Flexible Data Pipeline**: BigQuery integration for market data (SPY, QQQ, IWM, RSP)
+- **Production-Ready**: Docker containerization, GCP Vertex AI deployment, TensorBoard logging
+- **Hybrid Development**: Fast local iteration with venv, validated Docker testing before cloud deployment
+- **Comprehensive Logging**: Detailed feature tracking, gradient monitoring, TensorBoard metrics
 
 ---
 
@@ -105,6 +106,126 @@ inflation_predictor/
 
 ---
 
+## ⚡ Quick Start (Local Training)
+
+Get started with local TFT training in 3 steps:
+
+### **Step 1: Setup Environment**
+
+```bash
+# Clone repository
+git clone <your-repo-url>
+cd inflation_predictor
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure environment
+cp .env.example .env
+# Edit .env and set: GCP_PROJECT_ID=your-project-id
+```
+
+### **Step 2: Generate Training Data**
+
+```bash
+# Load data from BigQuery and create TFT features
+python scripts/02_features/tft/tft_data_loader.py
+
+# This will:
+# - Query market data (SPY, QQQ, IWM, RSP) from BigQuery
+# - Generate technical indicators (SMA, volume features)
+# - Create time-varying features (month_sin/cos, is_weekend)
+# - Save to data/processed/ (X_train.npy, y_train.npy, etc.)
+# - Save scalers for inference (scalers.pkl)
+```
+
+**Output:**
+```
+data/processed/
+├── X_train.npy          # Training sequences (2198, 192, 7)
+├── y_train.npy          # Training targets (2198, 3)
+├── X_val.npy            # Validation sequences
+├── y_val.npy            # Validation targets
+├── X_test.npy           # Test sequences
+├── y_test.npy           # Test targets
+├── timestamps_train.npy # Timestamps for each sample
+├── timestamps_val.npy
+├── timestamps_test.npy
+└── scalers.pkl          # StandardScaler objects
+```
+
+### **Step 3: Train TFT Model**
+
+```bash
+# Train locally with default config
+python scripts/03_training/tft/tft_train_local.py
+
+# Or with custom config
+python scripts/03_training/tft/tft_train_local.py --config configs/my_config.yaml
+
+# Force reload data from BigQuery
+python scripts/03_training/tft/tft_train_local.py --reload
+```
+
+**Training Output:**
+- Model checkpoint: `models/tft/tft_best.pt`
+- TensorBoard logs: `logs/tensorboard/`
+- Training checkpoints: `checkpoints/tft/`
+
+**View Training Progress:**
+```bash
+# Open TensorBoard
+tensorboard --logdir logs/tensorboard
+
+# Open browser to http://localhost:6006
+```
+
+### **What You'll See:**
+
+```
+================================================================================
+   Feature Configuration
+================================================================================
+
+📊 Data Dimensions:
+  Lookback window: 192 timesteps
+  Number of features: 7
+  Prediction horizons: 3
+
+🔑 TIME-VARYING KNOWN Features (3):
+   1. month_sin
+   2. month_cos
+   3. is_weekend
+
+📊 TIME-VARYING UNKNOWN Features (4):
+   1. close
+   2. volume
+   3. sma_50
+   4. sma_200
+
+🎯 Output Targets (3 horizons):
+  1. Horizon 4 (target_4_periods_ahead)
+  2. Horizon 8 (target_8_periods_ahead)
+  3. Horizon 16 (target_16_periods_ahead)
+
+================================================================================
+Epoch 1/100
+  Train Loss: 0.0234
+  Val Loss: 0.0256, MAE: 0.0123, RMSE: 0.0178
+  Dir Acc: 52.34%
+  Grad Norm: avg=0.1234, max=0.5678, min=0.0123
+  Layer Gradients (batch 1):
+    Input       : norm=0.1234, max=0.5678, std=0.0234
+    LSTM_L0     : norm=0.2345, max=0.6789, std=0.0345
+    ...
+```
+
+---
+
 ## 🚀 Installation
 
 ### Local Setup
@@ -128,113 +249,186 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-**macOS with Apple Silicon (M1/M2):**
-```bash
-# Use TensorFlow for macOS
-pip install tensorflow-macos==2.13.0 tensorflow-metal==1.0.0
-```
+---
 
-### Docker Setup
+## ☁️ Quick Start (GCP Cloud Training)
 
-**Prerequisites:**
-- Docker Desktop
-- docker-compose
+Deploy and train on Google Cloud Vertex AI for production workloads:
 
-**Steps:**
+### **Step 1: GCP Setup**
 
 ```bash
-# Build the Docker image
-docker-compose build
+# Install gcloud CLI (if not already installed)
+# https://cloud.google.com/sdk/docs/install
 
-# Verify installation
-docker-compose run --rm trainer python --version
+# Authenticate
+gcloud auth login
+gcloud auth application-default login
+
+# Set project
+gcloud config set project YOUR_PROJECT_ID
+
+# Run setup script (creates bucket, service account, IAM roles)
+bash scripts/05_deployment/setup_gcp.sh
 ```
 
-### When to Rebuild Docker Images
+**This creates:**
+- GCS bucket: `gs://YOUR_PROJECT_ID-models`
+- Service account: `vertex-model-trainer@YOUR_PROJECT.iam.gserviceaccount.com`
+- IAM roles: AI Platform Admin, Storage Admin, BigQuery User
 
-**You MUST rebuild the Docker image when:**
-
-1. **Dockerfile changes** - Modified base image, system packages, or build steps
-   ```bash
-   docker-compose build --no-cache
-   ```
-
-2. **requirements.txt changes** - Added or updated Python dependencies
-   ```bash
-   docker-compose build
-   ```
-
-3. **New Python packages needed** - Installing additional libraries
-   ```bash
-   # Update requirements.txt first, then:
-   docker-compose build
-   ```
-
-**You DON'T need to rebuild when:**
-
-- ✅ Changing Python code (`.py` files) - mounted as volume, live updates
-- ✅ Modifying config files (`config.yaml`) - mounted as volume
-- ✅ Updating data files - mounted as volume
-- ✅ Changing logs or outputs - mounted as volume
-
-### Docker Build Commands
+### **Step 2: Create Dataset Version**
 
 ```bash
-# Standard rebuild (uses cache when possible)
-docker-compose build
+# Generate and upload dataset to GCS
+python scripts/05_deployment/generate_dataset.py --version v1
 
-# Force complete rebuild (no cache, slower but clean)
-docker-compose build --no-cache
-
-# Rebuild specific service
-docker-compose build trainer
-
-# Pull latest base images and rebuild
-docker-compose build --pull
-
-# View image size and details
-docker images | grep inflation_predictor
-
-# Remove old images to save space
-docker image prune -f
+# This will:
+# - Run tft_data_loader.py to generate features
+# - Package data/processed/ and data/raw/
+# - Upload to gs://YOUR_PROJECT_ID-models/datasets/v1/
+# - Create manifest with metadata
 ```
 
-### Troubleshooting Docker Builds
+**Output in GCS:**
+```
+gs://YOUR_PROJECT_ID-models/datasets/v1/
+├── processed/
+│   ├── X_train.npy
+│   ├── y_train.npy
+│   ├── X_val.npy
+│   ├── y_val.npy
+│   ├── X_test.npy
+│   ├── y_test.npy
+│   ├── timestamps_*.npy
+│   └── scalers.pkl
+├── raw/
+│   └── (raw data files)
+└── manifest.json
+```
 
-**Problem: Build fails with "no space left"**
+### **Step 3: Build and Push Docker Image**
+
 ```bash
-# Clean up Docker system
-docker system prune -a --volumes
+# Build Docker image for Vertex AI
+docker build --platform linux/amd64 \
+  -f scripts/05_deployment/Dockerfile.vertex \
+  -t gcr.io/YOUR_PROJECT_ID/model-trainer:latest \
+  .
+
+# Push to Google Container Registry
+docker push gcr.io/YOUR_PROJECT_ID/model-trainer:latest
 ```
 
-**Problem: Changes not reflected in container**
+**Note:** Building for `linux/amd64` is required for GCP, especially on Apple Silicon Macs.
+
+### **Step 4: Test Docker Locally (Optional but Recommended)**
+
 ```bash
-# Rebuild without cache
-docker-compose build --no-cache
+# Test in same environment as GCS before deploying
+bash scripts/05_deployment/test_docker_local.sh
 
-# Or restart container
-docker-compose down
-docker-compose up -d
+# This will:
+# - Build Docker image
+# - Run training with mounted local data
+# - Validate everything works before spending GCS credits
 ```
 
-**Problem: Container uses old code**
+### **Step 5: Submit Training Job to Vertex AI**
+
 ```bash
-# Check if volumes are mounted correctly
-docker-compose config
+# Submit job with dataset version v1
+python scripts/05_deployment/submit_job.py --dataset-version v1
 
-# Code should be mounted at: .:/app
+# Or with custom machine type
+python scripts/05_deployment/submit_job.py \
+  --dataset-version v1 \
+  --machine-type n1-highmem-8
 ```
 
-### Google Cloud Platform (GCP) Setup
+**Monitor Training:**
+```bash
+# View in GCP Console
+https://console.cloud.google.com/vertex-ai/training/custom-jobs
 
-**For BigQuery data extraction (optional - skip if using dummy data):**
+# Or check logs
+gcloud ai custom-jobs stream-logs JOB_ID --region=us-central1
+```
 
-#### Prerequisites:
-- Google Cloud Platform account
-- BigQuery dataset with stock/index data
-- Service account with BigQuery access
+### **Step 6: Retrieve Trained Model**
 
-#### Setup Steps:
+```bash
+# Download model from GCS
+gsutil cp gs://YOUR_PROJECT_ID-models/models/tft/tft_best.pt models/tft/
+
+# Or download TensorBoard logs
+gsutil -m cp -r gs://YOUR_PROJECT_ID-models/tensorboard_logs/ logs/
+```
+
+### **What You'll See in Vertex AI Logs:**
+
+```
+================================================================================
+   Vertex AI Training (TFT)
+================================================================================
+Job: model-training-20251119-170000
+GCS Bucket: YOUR_PROJECT_ID-models
+Dataset Version: v1
+
+📦 Loading Dataset Version: v1
+  ✅ Processed data loaded to: data/processed/
+  ✅ Raw data loaded to: data/raw/
+
+================================================================================
+   Feature Configuration
+================================================================================
+
+📊 Data Dimensions:
+  Lookback window: 192 timesteps
+  Number of features: 7
+  Prediction horizons: 3
+
+🔑 TIME-VARYING KNOWN Features (3):
+   1. month_sin
+   2. month_cos
+   3. is_weekend
+
+📊 TIME-VARYING UNKNOWN Features (4):
+   1. close
+   2. volume
+   3. sma_50
+   4. sma_200
+
+================================================================================
+Epoch 1/100
+  Train Loss: 0.0234
+  Val Loss: 0.0256, MAE: 0.0123, RMSE: 0.0178
+  Dir Acc: 52.34%
+  Grad Norm: avg=0.1234, max=0.5678, min=0.0123
+  Layer Gradients (batch 1):
+    Input       : norm=0.1234, max=0.5678, std=0.0234
+    LSTM_L0     : norm=0.2345, max=0.6789, std=0.0345
+    LSTM_L1     : norm=0.3456, max=0.7890, std=0.0456
+    ...
+```
+
+---
+
+## 🚀 Installation
+
+**All installation and setup instructions are in the Quick Start sections above:**
+
+- **For local development:** See [⚡ Quick Start (Local Training)](#-quick-start-local-training)
+- **For cloud deployment:** See [☁️ Quick Start (GCP Cloud Training)](#%EF%B8%8F-quick-start-gcp-cloud-training)
+
+**Additional Resources:**
+- Detailed training documentation: `scripts/03_training/README.md`
+- Deployment documentation: `scripts/05_deployment/README.md`
+- Data pipeline documentation: `scripts/02_features/README.md`
+
+---
+
+## 📚 Project Structure
 
 **1. Create a GCP Service Account:**
 
@@ -393,26 +587,6 @@ bq --apilog query --use_legacy_sql=false 'SELECT 1 as test'
 ✓ Connection successful!
 ```
 
-**Docker with GCP:**
-
-```bash
-# Mount credentials into Docker container
-docker-compose run --rm \
-  -v $(pwd)/credentials:/app/credentials \
-  -e GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/gcp-key.json \
-  trainer bash
-```
-
-Or add to `docker-compose.yml`:
-
-```yaml
-services:
-  trainer:
-    environment:
-      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/gcp-key.json
-    volumes:
-      - ./credentials:/app/credentials:ro  # Read-only mount
-```
 
 **Security Best Practices:**
 
@@ -471,24 +645,6 @@ tensorboard --logdir=logs/tensorboard
 open logs/plots/*_history.png
 ```
 
-### Docker
-
-```bash
-
-# Build image (first time or after Dockerfile changes)
-docker-compose build
-
-# Start interactive container
-docker-compose run --rm trainer bash
-
-# Inside container:
-python train.py --generate-dummy --model-type lstm --epochs 30
-
-# View TensorBoard (in separate terminal)
-docker-compose up tensorboard
-# Open: http://localhost:6006
-```
-
 ---
 
 ## 📖 Usage
@@ -500,8 +656,8 @@ docker-compose up tensorboard
 **First-time setup** - Authenticate with Google Cloud for BigQuery access:
 
 ```bash
-# Option 1: Using service account key (recommended for Docker)
-export GOOGLE_APPLICATION_CREDENTIALS="$(pwd)/credentials/gcp-key.json"
+# Using your Google account
+gcloud auth application-default login
 
 # Option 2: Using your Google account (no key needed)
 gcloud auth application-default login
@@ -510,27 +666,8 @@ gcloud config set project YOUR_PROJECT_ID
 
 **📚 See [GCP Setup](#google-cloud-platform-gcp-setup) for detailed authentication instructions.**
 
-#### Prerequisites: Docker
-
-```bash
-
-# Build image (first time or after Dockerfile changes)
-docker-compose build
-
 ---
 
-#### Enter Docker Environment
-
-**All commands below should be run inside the Docker container:**
-
-```bash
-# Start and enter the Docker container
-docker-compose run --rm trainer bash
-
-# You should now see a prompt like: root@containerid:/app#
-# All subsequent commands run inside this container
-```
----
 
 #### Complete Pipeline
 
@@ -584,7 +721,7 @@ python train.py --model-type mlp --config configs/mlp_multi_horizon.yaml --epoch
 # ============================================================
 
 # View TensorBoard
-docker-compose up tensorboard
+tensorboard --logdir logs/tensorboard
 # Open: http://localhost:6006
 ```
 
@@ -885,67 +1022,121 @@ python train.py \
 
 ---
 
-## 🔄 Workflows
+##  Troubleshooting
 
-### Local Development Workflow
+### TensorFlow Installation Issues (macOS)
 
+**Problem:** TensorFlow hangs or "Illegal instruction" error
+
+**Solution:**
 ```bash
-# 1. Activate virtual environment
-source venv/bin/activate
-
-# 2. Generate or prepare data
-python scripts/generate_data.py --n-samples 10000
-
-# 3. Train model (quick test)
-python train.py --model-type mlp --epochs 5
-
-# 4. Train production model
-python train.py --model-type lstm --epochs 100
-
-# 5. Monitor with TensorBoard
-tensorboard --logdir=logs/tensorboard
-
-# 6. Evaluate results
-open logs/plots/*_history.png
-cat logs/metrics/*_metrics.csv
+pip uninstall tensorflow -y
+pip install tensorflow-macos==2.13.0 tensorflow-metal==1.0.0
 ```
 
-### Docker Development Workflow
 
+### Data Not Found Error
+
+**Problem:** `FileNotFoundError: data/raw/train.csv`
+
+**Solution:**
 ```bash
-# 1. Build image (first time or after Dockerfile changes)
-docker-compose build
+# Either generate data:
+python train.py --generate-dummy
 
-# 2. Start interactive session
-docker-compose run --rm trainer bash
-
-# Inside container:
-# 3. Generate data
-python scripts/generate_data.py --n-samples 10000
-
-# 4. Train models
-python train.py --model-type mlp --epochs 30
-python train.py --model-type lstm --epochs 50
-python train.py --model-type transformer --epochs 100
-
-# 5. Exit container
-exit
-
-# 6. View results (on local machine)
-open logs/plots/*_history.png
-
-# 7. Start TensorBoard
-docker-compose up tensorboard
-# Open: http://localhost:6006
+# Or update config.yaml to point to correct path:
+data:
+  local:
+    train_path: 'data/dummy/train.csv'
 ```
 
-**Docker one-liner training:**
 
+### Out of Memory
+
+**Problem:** Training crashes with OOM error
+
+**Solution:**
 ```bash
-# Train without interactive shell
-docker-compose run --rm trainer \
-  python train.py --generate-dummy --model-type lstm --epochs 30
+# Reduce batch size
+python train.py --batch-size 16
+
+# Or reduce model size in config.yaml:
+model:
+  hidden_dim: 64  # Instead of 128
+  num_layers: 1   # Instead of 2
 ```
+
+---
+
+## ✨ Project Features
+
+### ✅ Completed Features
+
+- [x] Modular project structure
+- [x] 3 model architectures (MLP, LSTM, Transformer)
+- [x] Flexible data pipeline (local, BigQuery, dummy)
+- [x] Configurable training (YAML + CLI)
+- [x] Early stopping & checkpointing
+- [x] TensorBoard integration
+- [x] Training visualization plots
+- [x] CSV metric logging
+- [x] GCP deployment support
+- [x] Comprehensive logging
+- [x] Reproducible experiments (seeding)
+
+### 🚧 Future Enhancements
+
+- [ ] Hyperparameter tuning (Optuna/Keras Tuner)
+- [ ] Model ensembling
+- [ ] Real-time prediction API
+- [ ] MLflow experiment tracking
+- [ ] Automated testing suite
+- [ ] Data augmentation strategies
+- [ ] Multi-step forecasting
+- [ ] Attention visualization
+
+---
+
+## 📚 Additional Resources
+
+### Documentation
+
+- [TensorFlow Documentation](https://www.tensorflow.org/api_docs)
+- [Keras Guide](https://keras.io/guides/)
+- [Google Cloud AI Platform](https://cloud.google.com/ai-platform/docs)
+
+### Notebooks
+
+Explore the `notebooks/` directory for:
+- Data exploration
+- Model comparison
+- Error analysis
+- Hyperparameter tuning experiments
+
+---
+
+## 📄 License
+
+This project is for educational purposes (CS230 Deep Learning).
+
+---
+
+## 🤝 Contributing
+
+For teammates:
+
+1. Pull latest changes: `git pull`
+2. Create feature branch: `git checkout -b feature/your-feature`
+3. Make changes and test locally
+4. Commit: `git commit -m "Add: your feature"`
+5. Push: `git push origin feature/your-feature`
+6. Create Pull Request
+
+---
+
+## 📧 Contact
+
+For questions or issues, please contact the team or open an issue in the repository
 
 ### GCP Deployment Workflow
 
@@ -954,11 +1145,7 @@ docker-compose run --rm trainer \
 export PROJECT_ID=your-gcp-project-id
 export REGION=us-central1
 
-# 2. Build and push Docker image
-docker build -t gcr.io/$PROJECT_ID/cs230-trainer:latest .
-docker push gcr.io/$PROJECT_ID/cs230-trainer:latest
-
-# 3. Run on Vertex AI Custom Job
+# 2. Run on Vertex AI Custom Job
 gcloud ai custom-jobs create \
   --region=$REGION \
   --display-name=cs230-lstm-training \
@@ -1030,11 +1217,6 @@ pip uninstall tensorflow -y
 pip install tensorflow-macos==2.13.0 tensorflow-metal==1.0.0
 ```
 
-### Docker "Illegal instruction" on Apple Silicon
-
-**Problem:** Container crashes with "Illegal instruction"
-
-**Solution:** Already fixed in `Dockerfile` using `python:3.10-slim` base image
 
 ### Data Not Found Error
 
@@ -1051,18 +1233,6 @@ data:
     train_path: 'data/dummy/train.csv'
 ```
 
-### Permission Issues (Docker)
-
-**Problem:** Files created in Docker are owned by root
-
-**Solution:**
-```bash
-# Run container with your user ID
-docker-compose run --rm --user $(id -u):$(id -g) trainer bash
-
-# Or fix permissions after:
-sudo chown -R $USER:$USER data/ logs/ checkpoints/ models/
-```
 
 ### Out of Memory
 
@@ -1093,7 +1263,6 @@ model:
 - [x] TensorBoard integration
 - [x] Training visualization plots
 - [x] CSV metric logging
-- [x] Docker containerization
 - [x] GCP deployment support
 - [x] Comprehensive logging
 - [x] Reproducible experiments (seeding)

@@ -1,0 +1,40 @@
+# Vertex AI Training - Optimized Docker Image
+FROM python:3.10-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies (minimal)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir cloudml-hypertune && \
+    # Clean up pip cache and unnecessary files
+    rm -rf /root/.cache/pip && \
+    find /usr/local/lib/python3.10 -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true && \
+    find /usr/local/lib/python3.10 -type d -name 'tests' -exec rm -rf {} + 2>/dev/null || true
+
+# Copy project files (only necessary ones)
+COPY configs/ configs/
+COPY scripts/ scripts/
+COPY utils/ utils/
+
+# Create necessary directories
+RUN mkdir -p checkpoints models logs
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV TF_CPP_MIN_LOG_LEVEL=2
+ENV VERTEX_AI_JOB=1
+
+# Vertex AI will inject GCP credentials automatically
+# No need to copy service account keys
+
+# Entry point for Vertex AI Custom Training
+ENTRYPOINT ["python", "scripts/05_deployment/train_vertex.py"]

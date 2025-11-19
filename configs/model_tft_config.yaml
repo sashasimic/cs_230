@@ -1,0 +1,267 @@
+# Temporal Fusion Transformer Configuration
+# Inflation Prediction - Multi-Horizon Quantile Forecasting
+
+# Data Configuration
+data:
+  # ============================================================
+  # TICKER DATA SOURCE (Polygon.io → BigQuery)
+  # ============================================================
+  tickers:
+    # List of ticker symbols to include (all will use same frequency and features)
+    symbols:
+    # ========================================
+    # A. EQUITY MARKET INDICES
+    # ========================================
+    # Primary economic bellwethers - anticipate inflation 3-6 months ahead
+    - SPY      # S&P 500 - Primary economic bellwether, inflation-driven earnings signal
+    - QQQ      # Nasdaq 100 - Inflation-sensitive via discount rate (growth stocks)
+    - IWM      # Russell 2000 - Domestic demand & wage inflation proxy
+    - RSP      # Equal-Weight S&P 500 - Market breadth, narrows during inflation uncertainty
+    
+    # Shared frequency for all tickers
+    frequency: 'daily'
+    
+    # Shared raw OHLCV features (reduced set - removed open/high/low)
+    raw_features:
+      - close
+      - volume
+    
+    # Shared technical indicators (synthetic features) for all tickers
+    synthetic_features:
+      # - returns_5      # 5-period % return  
+      # - log_returns    # Log return
+      # - volatility_20  # Rolling std of returns (20-period)
+      # # - atr_14         # Average True Range (MISSING DATA)
+      # - momentum_5     # Price momentum (5-period)
+      # - momentum_10    # Price momentum (10-period)
+      # # - roc_5          # Rate of Change % (5-period) (EXCLUDED)
+      # # - roc_10         # Rate of Change % (10-period) (EXCLUDED)
+      # - volume_ma_5    # Volume moving average (5-period)
+      # - volume_ma_10   # Volume moving average (10-period)
+      # - volume_ratio   # Volume / volume_ma_10 (volume strength)
+      # # - obv            # On-Balance Volume (MISSING DATA)
+      # - high_low_ratio # Daily price range ratio
+      # - bb_upper_20    # Bollinger Band upper
+      # - bb_middle_20   # Bollinger Band middle
+      # - bb_lower_20    # Bollinger Band lower
+      # - bb_width       # Bollinger Band width
+      # - sma_10
+      # Removed: sma_20 (redundant with bb_middle_20)
+      - sma_50
+      - sma_200
+      # - ema_12         # Exponential Moving Average (12-period) (MISSING DATA)
+      # - ema_26         # Exponential Moving Average (26-period) (MISSING DATA)
+      # - macd           # MACD line (MISSING DATA)
+      # - macd_signal    # MACD signal line (MISSING DATA)
+      # - macd_hist      # MACD histogram (MISSING DATA)
+  
+  # ============================================================
+  # GDELT SENTIMENT DATA SOURCE (GDELT GKG → BigQuery)
+  # ============================================================
+  gdelt:
+    enabled: false  # Set to false to exclude GDELT features (NO DATA AVAILABLE)
+    frequency: 'daily'  # Must match ticker frequency for alignment
+    
+    # Sentiment features
+    features:
+      - weighted_avg_tone       # Primary sentiment (-10 to +10)
+      - weighted_avg_polarity   # Sentiment strength/intensity
+      - num_articles            # Article volume (media attention)
+      - num_sources             # Source diversity
+    
+    # Feature engineering
+    normalize_counts: true      # Normalize article/source counts
+    include_lags: true          # Include lagged sentiment (t-1, t-2)
+    lag_periods: [1, 4, 16]     # 15min, 1hr, 4hr ago
+  
+  # ============================================================
+  # GENERAL DATA CONFIGURATION
+  # ============================================================
+  # Date range for training data
+  start_date: '2022-01-01'  # Reduced range to manage memory usage
+  end_date: '2025-05-05'    # Future date for ongoing data collection/test split
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+  
+  # Time series parameters
+  lookback_window: 192        # 192 * 15min = 48 hours (matches dataset v3)
+  prediction_horizons: [4, 8, 16]  # 1h, 2h, 4h ahead (matches dataset v3)
+  
+  # Target variable
+  target: 'returns'  # Predict returns (stationary, better for ML)
+  
+  # Normalization
+  normalize: true
+  normalization_method: 'standard'  # 'standard' or 'minmax'
+
+# Model Architecture
+model:
+  # Core TFT parameters
+  hidden_size: 128              # Hidden layer dimension
+  lstm_layers: 3               # Number of LSTM layers
+  attention_heads: 8           # Multi-head attention
+  dropout: 0.15
+  
+  # Quantile prediction
+  quantiles: [0.5]            # Start with median only (reduce to regression task)
+  
+  # Variable selection network (VSN)
+  use_variable_selection: true  # Enable VSN for feature importance learning
+  
+  # Static covariates (if any)
+  static_features: []          # e.g., ticker_id, frequency_encoded
+  
+  # Time-varying known features (future known)
+  # Note: Current SimplifiedTFT treats all features the same, but we list them separately for clarity
+  time_varying_known:
+    # - hour_sin              # Cyclical hour encoding
+    # - hour_cos
+    # Removed: day_sin, day_cos (use is_weekend instead)
+    - month_sin             # Cyclical month encoding
+    - month_cos
+    - is_weekend            # Binary weekend indicator
+  
+  # Time-varying unknown features (past-only, not known in future)
+  time_varying_unknown:
+    # ===== TICKER OHLCV & INDICATORS =====
+    - close                    # Close price (primary feature)
+    # Removed: returns (redundant with log_returns), open/high/low (use close + high_low_ratio)
+    # - returns_5                # 5-period % return
+    # - log_returns              # Log return (stationary)
+    # # Removed: volatility_5 (redundant with volatility_20)
+    # - volatility_20            # Rolling volatility (20-period)
+    # - momentum_5               # Price momentum (5-period)
+    # - momentum_10              # Price momentum (10-period)
+    # - volume_ma_5              # Volume moving average (5-period)
+    # - volume_ma_10             # Volume moving average (10-period)
+    # - volume_ratio             # Volume strength
+    # - high_low_ratio           # Daily price range ratio
+    # - bb_upper_20              # Bollinger Band upper
+    # - bb_middle_20             # Bollinger Band middle
+    # - bb_lower_20              # Bollinger Band lower
+    # - bb_width                 # Bollinger Band width
+    - volume
+    # - sma_10
+    # Removed: sma_20 (duplicate of bb_middle_20)
+    - sma_50
+    - sma_200
+    # - ema_12                   # Exponential Moving Average (MISSING DATA)
+    # - ema_26                   # Exponential Moving Average (MISSING DATA)
+    # - macd                     # MACD line (MISSING DATA)
+    # - macd_signal              # MACD signal line (MISSING DATA)
+    # - macd_hist                # MACD histogram (MISSING DATA)
+    
+    # ===== GDELT SENTIMENT FEATURES (DISABLED - NO DATA) =====
+    # - weighted_avg_tone        # News sentiment (-10 to +10)
+    # - weighted_avg_polarity    # Sentiment strength
+    # - num_articles             # Media attention (normalized)
+    # - num_sources              # Source diversity (normalized)
+    # Lagged sentiment (if enabled in data.gdelt.include_lags)
+    # - sentiment_lag_1          # Sentiment 15min ago
+    # - sentiment_lag_4          # Sentiment 1hr ago
+    # - sentiment_lag_16         # Sentiment 4hr ago
+
+# Training Configuration
+training:
+  # Optimization
+  batch_size: 64
+  epochs: 100  # Quick run: reduced from 100
+  learning_rate: 0.003
+  optimizer: 'adam'
+  
+  # Directional loss (for trading alignment)
+  use_directional_loss: false # Disable initially (focus on main regression)
+  wrong_direction_weight: 2.0  # Reduce penalty when enabled later
+  
+  # Learning rate schedule
+  lr_scheduler:
+    enabled: true
+    type: 'reduce_on_plateau'
+    factor: 0.5
+    patience: 5
+    min_lr: 0.00001
+  
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 5  # Quick run: reduced from 10
+    monitor: 'val_loss'
+    mode: 'min'
+  
+  # Loss function
+  loss: 'quantile'  # Quantile loss for probabilistic forecasting
+  
+  # Gradient clipping
+  gradient_clip_val: 1.0
+  
+  # Checkpointing
+  # Note: During training, checkpoints are saved to checkpoints/tft/
+  #       At the end, the best checkpoint is copied to models/tft/tft_best.pt
+  checkpoint:
+    enabled: true
+    save_top_k: 3           # Keep top 3 best checkpoints (in checkpoints/tft/)
+    monitor: 'val_loss'     # Metric to monitor
+    mode: 'min'             # 'min' for loss, 'max' for accuracy
+    dirpath: 'checkpoints/tft'  # Intermediate checkpoints directory
+
+# Evaluation Configuration
+evaluation:
+  # Metrics to track
+  metrics:
+    - 'mae'          # Mean Absolute Error
+    - 'rmse'         # Root Mean Squared Error
+    - 'mape'         # Mean Absolute Percentage Error
+    - 'quantile_loss'
+    - 'coverage'     # Quantile coverage (p10, p90)
+  
+  # Calibration check
+  calibration:
+    enabled: true
+    bins: 10
+
+# Inference Configuration
+inference:
+  # Batch prediction
+  batch_size: 256
+  
+  # Output format
+  output_format: 'dataframe'  # 'dataframe' or 'dict'
+  
+  # Save predictions
+  save_predictions: true
+  output_dir: 'temp/predictions'
+
+# BigQuery Configuration
+bigquery:
+  project_id: null  # Set via environment variable GCP_PROJECT_ID
+  dataset_id: 'raw_dataset'
+  
+  # Ticker data tables
+  ticker:
+    raw_table: 'raw_ohlcv'           # Template: raw_ohlcv_{ticker}_{frequency}
+    synthetic_table: 'synthetic_indicators'  # Template: synthetic_indicators_{ticker}_{frequency}
+  
+  # GDELT sentiment table
+  gdelt:
+    table: 'gdelt_sentiment'         # 15-minute aggregated sentiment
+
+# Logging and Monitoring
+logging:
+  log_level: 'INFO'
+  log_dir: 'logs/tft'
+  tensorboard: true
+  mlflow: false
+  
+  # Experiment tracking
+  experiment_name: 'inflation_tft_quick_run'
+  run_name: null  # Auto-generated if null
+
+# Reproducibility
+seed: 42
+
+# Hardware
+hardware:
+  device: 'auto'  # 'auto', 'cpu', 'cuda', 'mps'
+  num_workers: 0  # Data loader workers (set to 0 for Docker to avoid shared memory issues)
+  pin_memory: false

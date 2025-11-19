@@ -1,14 +1,92 @@
-
 # Docker-specific ignores
 Dockerfile
 docker-compose.yml
 .dockerignore
 
-# Outputs (will be mounted as volumes)
-logs/
-checkpoints/
-models/*.h5
+# Data directories (HUGE - will be mounted as volumes or generated in container)
+data/raw/**
+data/processed/**
+data/dummy/**
+data/datasets/**
+data/**/*.csv
+data/**/*.parquet
+data/**/*.pkl
+data/**/*.h5
+data/**/*.npy
+data/**/*.npz
 
-# Virtual environment (not needed in container)
-venv/
-.venv/
+# Model outputs (will be mounted as volumes)
+logs/
+logs/tensorboard/
+logs/tft/
+checkpoints/
+models/
+models/**/*.h5
+models/**/*.pt
+models/**/*.pth
+models/**/*.ckpt
+models/**/*.safetensors
+models/**/*.onnx
+*.h5
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments (HUGE)
+venv/**
+.venv/**
+env/**
+ENV/**
+*.pyenv/**
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git files
+.git/
+.gitignore
+.gitattributes
+
+# Environment files (contain secrets)
+.env
+.env.local
+.env.*.local
+
+# Documentation and notebooks
+*.ipynb
+*.md
+README.md
+LICENSE
+docs/
+
+# Testing
+tests/
+*.test.py
+test_*.py
+
+# Temporary files
+*.log
+*.tmp
+*.temp
+tmp/**
+temp/**

@@ -1,0 +1,37 @@
+array_shapes:
+  X: '[samples, 192, 7]'
+  ts: '[samples]'
+  y: '[samples, 3]'
+created_at: '2025-11-19T16:41:32.988460'
+frequency: daily
+lookback_window: 192
+normalization: standard
+prediction_horizons:
+- 4
+- 8
+- 16
+raw_features:
+- close
+- volume
+synthetic_features:
+- sma_50
+- sma_200
+target: returns
+test_samples: 471
+tickers:
+- SPY
+- QQQ
+- IWM
+- RSP
+time_varying_known:
+- month_sin
+- month_cos
+- is_weekend
+time_varying_unknown:
+- close
+- volume
+- sma_50
+- sma_200
+total_features: 7
+train_samples: 2198
+val_samples: 471
