@@ -1,20 +1,21 @@
-"""Verify synthetic indicator calculations by comparing BigQuery data with local computations.
+"""Master verification orchestrator that delegates to specialized verification scripts.
 
-This script:
-1. Checks timestamp alignment between raw OHLCV and synthetic indicators
-2. Fetches raw data from BigQuery and computes indicators locally
-3. Compares computed values with stored synthetic indicators
-4. Reports any mismatches or calculation errors
+This script coordinates verification by delegating to:
+- tickers_verify_synthetic.py: Verifies synthetic indicators, alignment, and data quality
+
+For code reuse, all verification logic is in the specialized scripts.
 """
 import os
 import sys
 import argparse
+import subprocess
+import yaml
 import pandas as pd
 import numpy as np
-import yaml
 from datetime import datetime
+from typing import Dict, List, Tuple
 from google.cloud import bigquery
-from typing import List, Dict, Tuple
+from pathlib import Path
 
 # Load environment variables
 try:
@@ -498,6 +499,10 @@ def export_combined_data(raw_df: pd.DataFrame, stored_df: pd.DataFrame,
                         print(f"    {ind:20s}: NULL")
             print()
     
+    # Create output directory if it doesn't exist
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
     # Save to Parquet
     combined.to_parquet(output_file, index=False, engine='pyarrow', compression='snappy')
     parquet_size = os.path.getsize(output_file) / 1024 / 1024
@@ -562,8 +567,8 @@ Examples:
     parser.add_argument('--show-samples', action='store_true', help='Show sample mismatches for debugging')
     parser.add_argument('--skip-alignment-check', action='store_true', help='Skip alignment check and proceed directly to verification')
     parser.add_argument('--export', action='store_true', help='Export combined data to Parquet file')
-    parser.add_argument('--output-file', type=str, default='temp/verification_output.parquet',
-                       help='Output file path for export (default: temp/verification_output.parquet)')
+    parser.add_argument('--output-file', type=str, default='temp/tickers_verification_output.parquet',
+                       help='Output file path for export (default: temp/tickers_verification_output.parquet)')
     parser.add_argument('--exclude-weekends', action='store_true',
                        help='Exclude weekend gaps from analysis (recommended for stock market data)')
 

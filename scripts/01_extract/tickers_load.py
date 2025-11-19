@@ -226,6 +226,8 @@ def main():
                        help='Skip verification step')
     parser.add_argument('--clean', action='store_true',
                        help='Clean existing data before loading')
+    parser.add_argument('--reload', action='store_true',
+                       help='Reload existing data (same as --clean but matches underlying script flags)')
     parser.add_argument('--top-up', action='store_true',
                        help='Incremental mode: auto-detect latest data and fill gaps to end date')
     parser.add_argument('--export-path', type=str,
@@ -299,6 +301,9 @@ def main():
             cmd.extend(['--tickers', args.ticker])
         # else: script will load from config
         
+        if args.reload or args.clean:
+            cmd.append('--reload')
+        
         if args.top_up:
             cmd.append('--top-up')
         
@@ -361,6 +366,9 @@ def main():
             cmd.extend(['--tickers', args.ticker])
         # else: script will load from config
         
+        if args.reload or args.clean:
+            cmd.append('--reload')
+        
         # Add indicators if specified
         if args.indicators:
             cmd.append('--indicators')
@@ -410,22 +418,11 @@ def main():
                 verify_end = end_date
             
             cmd = [
-                'python', 'scripts/01_extract/tickers_verify.py',
+                'python', 'scripts/01_extract/tickers_verify_synthetic.py',
                 '--ticker', args.ticker,
                 '--frequency', args.frequency,
-                '--start', verify_start,
-                '--end', verify_end
+                '--exclude-weekends'
             ]
-            
-            # Add indicators if specified (otherwise verify.py will load from config)
-            if args.indicators:
-                cmd.append('--indicators')
-                cmd.extend(indicators)
-            
-            cmd.append('--export')
-            
-            if args.export_path:
-                cmd.extend(['--output-file', args.export_path])
             
             if not run_command(cmd, "Data Verification"):
                 print("\n❌ Pipeline failed at Step 3: Verification")

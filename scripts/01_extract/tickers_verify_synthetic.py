@@ -727,6 +727,9 @@ def main():
         print("❌ Error: GCP_PROJECT_ID not set in environment")
         sys.exit(1)
     
+    # Load config (always, for indicators list)
+    config = load_config(args.config)
+    
     # Get tickers - either from args or config
     tickers_to_verify = []
     if args.ticker:
@@ -734,7 +737,6 @@ def main():
         print(f"📋 Verifying ticker: {args.ticker}")
     else:
         # Load tickers from config
-        config = load_config(args.config)
         if config and 'tickers' in config:
             tickers_to_verify = config['tickers']
             print(f"📋 Loaded {len(tickers_to_verify)} tickers from {args.config}")

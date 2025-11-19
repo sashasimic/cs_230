@@ -76,6 +76,8 @@ credentials/  # GCP service account keys
 *.tmp
 *.bak
 .cache/
+temp/
+
 
 # OS
 Thumbs.db
