@@ -43,17 +43,42 @@ def check_completeness(client: bigquery.Client, start_date: str, end_date: str, 
     """Check for missing intervals."""
     print_header("Data Completeness Check")
     
-    query = f"""
-    WITH expected_intervals AS (
-      SELECT
-        TIMESTAMP_TRUNC(ts, HOUR) + 
-        INTERVAL DIV(EXTRACT(MINUTE FROM ts), 15) * 15 MINUTE AS expected_timestamp
+    # Map frequency to BigQuery interval
+    freq_map = {
+        '15m': 'INTERVAL 15 MINUTE',
+        '1h': 'INTERVAL 1 HOUR',
+        '4h': 'INTERVAL 4 HOUR',
+        '1d': 'INTERVAL 1 DAY',
+        '1w': 'INTERVAL 7 DAY'
+    }
+    
+    interval_expr = freq_map.get(frequency, 'INTERVAL 15 MINUTE')
+    
+    # For daily frequency, generate date-based timestamps at midnight
+    if frequency == '1d':
+        timestamp_generation = f"""
+        TIMESTAMP(date_val) AS expected_timestamp
+      FROM
+        UNNEST(GENERATE_DATE_ARRAY(
+          DATE('{start_date}'),
+          DATE('{end_date}')
+        )) AS date_val
+        """
+    else:
+        timestamp_generation = f"""
+        ts AS expected_timestamp
       FROM
         UNNEST(GENERATE_TIMESTAMP_ARRAY(
           TIMESTAMP('{start_date}'),
           TIMESTAMP('{end_date} 23:59:59'),
-          INTERVAL 15 MINUTE
+          {interval_expr}
         )) AS ts
+        """
+    
+    query = f"""
+    WITH expected_intervals AS (
+      SELECT
+        {timestamp_generation}
     ),
     actual_data AS (
       SELECT timestamp, num_articles, num_sources
@@ -511,6 +536,44 @@ def main():
     
     # Initialize BigQuery client
     client = bigquery.Client(project=PROJECT_ID)
+    
+    # Quick data check - show what's in the table
+    print(f"\n🔍 Quick data check for frequency '{args.frequency}':")
+    check_query = f"""
+    SELECT 
+        COUNT(*) as row_count,
+        MIN(timestamp) as min_ts,
+        MAX(timestamp) as max_ts,
+        STRING_AGG(DISTINCT frequency ORDER BY frequency) as frequencies
+    FROM `{PROJECT_ID}.{DATASET_ID}.{GDELT_TABLE}`
+    WHERE frequency = '{args.frequency}'
+      AND DATE(timestamp) BETWEEN '{args.start_date}' AND '{args.end_date}'
+    """
+    try:
+        result = client.query(check_query).to_dataframe().iloc[0]
+        print(f"   Rows found: {result['row_count']}")
+        if result['row_count'] > 0:
+            print(f"   Date range: {result['min_ts']} to {result['max_ts']}")
+            print(f"   Frequencies: {result['frequencies']}")
+        else:
+            print(f"   ⚠️  No data found for frequency '{args.frequency}'")
+            print(f"\n   Checking all frequencies in table...")
+            all_freq_query = f"""
+            SELECT frequency, COUNT(*) as count
+            FROM `{PROJECT_ID}.{DATASET_ID}.{GDELT_TABLE}`
+            GROUP BY frequency
+            ORDER BY frequency
+            """
+            all_freqs = client.query(all_freq_query).to_dataframe()
+            if not all_freqs.empty:
+                print(f"   Available frequencies:")
+                for _, row in all_freqs.iterrows():
+                    print(f"     - {row['frequency']}: {row['count']:,} rows")
+            else:
+                print(f"   ⚠️  Table is empty!")
+    except Exception as e:
+        print(f"   ⚠️  Error checking data: {e}")
+    print()
     
     print_header("GDELT Sentiment Data Verification")
     print(f"Table: {PROJECT_ID}.{DATASET_ID}.{GDELT_TABLE}")

@@ -135,6 +135,76 @@ def build_gdelt_query(
     return query
 
 
+def resample_to_frequency(
+    df: pd.DataFrame,
+    target_frequency: str,
+    method: str = 'mean'
+) -> pd.DataFrame:
+    """Resample 15-minute GDELT data to target frequency.
+    
+    Args:
+        df: DataFrame with 15-minute intervals
+        target_frequency: Target frequency ('15m', '1h', '4h', '1d', '1w')
+        method: Aggregation method ('mean', 'median', 'first', 'last')
+    
+    Returns:
+        Resampled DataFrame
+    """
+    if target_frequency == '15m':
+        return df  # Already at native frequency
+    
+    print(f"\n📊 Resampling from 15m to {target_frequency}...")
+    
+    # Set timestamp as index for resampling
+    df_resampled = df.set_index('timestamp')
+    
+    # Define aggregation rules
+    agg_rules = {
+        'weighted_avg_tone': method,
+        'weighted_avg_positive': method,
+        'weighted_avg_negative': method,
+        'weighted_avg_polarity': method,
+        'num_articles': 'sum',
+        'num_sources': 'sum',
+        'total_word_count': 'sum',
+        'min_tone': 'min',
+        'max_tone': 'max'
+    }
+    
+    # Resample
+    df_resampled = df_resampled.resample(target_frequency).agg(agg_rules)
+    
+    # Reset index
+    df_resampled = df_resampled.reset_index()
+    
+    # Remove rows with no data
+    df_resampled = df_resampled[df_resampled['num_articles'] > 0]
+    
+    print(f"   Original intervals: {len(df):,}")
+    print(f"   Resampled intervals: {len(df_resampled):,}")
+    print(f"   Aggregation method: {method}")
+    
+    return df_resampled
+
+
+def clear_frequency_data(client: bigquery.Client, table_id: str, frequency: str) -> None:
+    """Delete all data for a specific frequency."""
+    print(f"\n🗑️  Clearing existing data for frequency: {frequency}")
+    print(f"   Table: {table_id}")
+    
+    delete_query = f"""
+    DELETE FROM `{table_id}`
+    WHERE frequency = '{frequency}'
+    """
+    
+    try:
+        job = client.query(delete_query)
+        job.result()
+        print(f"   ✅ Cleared all {frequency} data")
+    except Exception as e:
+        print(f"   ⚠️  Clear failed (table may not exist): {e}")
+
+
 def fetch_gdelt_sentiment(
     start_date: str,
     end_date: str,
@@ -267,7 +337,9 @@ def save_to_bigquery(
     
     # Add derived columns for consistency with tickers table
     df['date'] = pd.to_datetime(df['timestamp']).dt.date
-    df['frequency'] = '15m'  # GDELT native 15-minute interval
+    # Only set frequency if not already set (resampling sets it in main())
+    if 'frequency' not in df.columns:
+        df['frequency'] = '15m'  # GDELT native 15-minute interval
     df['ingestion_timestamp'] = pd.Timestamp.now(tz='UTC')
     
     print(f"\n{'='*80}")
@@ -429,25 +501,6 @@ def get_latest_timestamp(client: bigquery.Client, table_id: str) -> Optional[str
     return None
 
 
-def save_to_parquet(df: pd.DataFrame, output_path: str) -> None:
-    """
-    Save sentiment data to local parquet file.
-    
-    Args:
-        df: Sentiment DataFrame
-        output_path: Path to save parquet file
-    """
-    if df.empty:
-        print("\nNo data to save")
-        return
-    
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(output_path, index=False, engine='pyarrow')
-    
-    print(f"\n✅ Saved to {output_path}")
-    print(f"   {len(df)} rows × {len(df.columns)} columns")
-    print(f"   Size: {Path(output_path).stat().st_size / 1024 / 1024:.2f} MB")
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -520,15 +573,14 @@ def main():
         help='Skip auto-merge staging to main'
     )
     parser.add_argument(
-        '--output',
-        type=str,
-        default='data/raw/gdelt_sentiment.parquet',
-        help='Output parquet file path (default: data/raw/gdelt_sentiment.parquet)'
-    )
-    parser.add_argument(
         '--skip-bigquery',
         action='store_true',
-        help='Skip BigQuery upload (save to parquet only)'
+        help='Skip BigQuery upload'
+    )
+    parser.add_argument(
+        '--reload',
+        action='store_true',
+        help='Clear all existing data for this frequency before loading'
     )
     parser.add_argument(
         '--dry-run',
@@ -559,12 +611,22 @@ def main():
             if not end_date and 'date_range' in config:
                 end_date_cfg = config['date_range'].get('end_date')
                 end_date = datetime.now().strftime('%Y-%m-%d') if end_date_cfg is None else end_date_cfg
+            
+            # Read frequency from nested config (aggregation.frequency)
+            if 'aggregation' in config and 'frequency' in config['aggregation']:
+                frequency = config['aggregation']['frequency']
+                print(f"  Frequency: {frequency}")
+            
         except FileNotFoundError:
             if args.config != 'configs/gdelt.yaml':
                 print(f"⚠️  Config not found: {args.config}")
     
     if not topics:
         topics = DEFAULT_TOPICS
+    
+    # Set default frequency if not set
+    if 'frequency' not in locals():
+        frequency = '1d'  # Default to native GDELT frequency
     
     # Handle modes
     if args.purge:
@@ -634,7 +696,7 @@ def main():
         else:
             print(f"⚠️  No data, fetching: {start_date} to {end_date}")
     
-    # Fetch sentiment data
+    # Fetch sentiment data (15m intervals from BigQuery)
     df = fetch_gdelt_sentiment(
         start_date=start_date,
         end_date=end_date,
@@ -646,14 +708,22 @@ def main():
         print("\n⚠️  No data collected, exiting")
         sys.exit(0)
     
-    # Save to parquet
-    if not args.dry_run:
-        save_to_parquet(df, args.output)
-    else:
-        print(f"\n🔍 DRY RUN: Would save to {args.output}")
+    # Resample to target frequency if needed
+    if frequency != '15m':
+        df = resample_to_frequency(df, frequency, method='mean')
+        # Update frequency column to match resampled frequency
+        df['frequency'] = frequency
+        # Recalculate date column after resampling
+        df['date'] = pd.to_datetime(df['timestamp']).dt.date
     
     # Save to BigQuery (unless skipped)
     if not args.skip_bigquery:
+        # Handle --reload: clear all data for this frequency first
+        if args.reload and not args.dry_run:
+            client = bigquery.Client(project=PROJECT_ID)
+            main_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_NAME}"
+            clear_frequency_data(client, main_table_id, frequency)
+        
         save_to_bigquery(
             df,
             PROJECT_ID,

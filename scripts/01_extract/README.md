@@ -5,7 +5,8 @@ Scripts for fetching and loading financial data from various sources into BigQue
 ## Overview
 
 This folder contains scripts for:
-- **Loading OHLCV data** from Polygon.io API
+- **Loading OHLCV data** from Polygon.io API (tickers)
+- **Loading GDELT sentiment data** from Google's public BigQuery dataset
 - **Computing synthetic indicators** (SMA, RSI, MACD, etc.)
 - **Verifying data quality** and alignment
 - **Setting up BigQuery tables** and schemas
@@ -52,6 +53,32 @@ Computes synthetic indicators from raw OHLCV data.
 - Stores in separate BigQuery table
 - Skips existing data unless `--reload` is used
 
+#### `gdelt_load.py` - GDELT Sentiment Data Fetcher
+Fetches news sentiment data from Google's public GDELT BigQuery dataset.
+
+```bash
+# Load using config (daily frequency by default)
+python scripts/01_extract/gdelt_load.py --config configs/gdelt.yaml
+
+# Reload (clear existing data for frequency)
+python scripts/01_extract/gdelt_load.py --config configs/gdelt.yaml --reload
+
+# Load with custom date range and frequency
+python scripts/01_extract/gdelt_load.py \
+  --start-date 2024-01-01 \
+  --end-date 2024-12-31 \
+  --frequency 1h \
+  --reload
+```
+
+**Features:**
+- Queries GDELT GKG (Global Knowledge Graph) public dataset
+- Filters by topics (INFLATION, FED, INTEREST_RATE, etc.)
+- Aggregates sentiment to configurable frequency (15m, 1h, 4h, 1d, 1w)
+- Weighted sentiment scores by article word count
+- Saves directly to BigQuery (no local parquet)
+- `--reload` flag clears existing data for frequency before loading
+
 ### Data Verification
 
 #### `tickers_verify.py` - Main Verification Orchestrator
@@ -86,6 +113,38 @@ Verifies synthetic indicators.
 - Alignment with raw data
 - Value range checks
 
+#### `gdelt_verify.py` - GDELT Data Verification
+Verifies GDELT sentiment data quality and completeness.
+
+```bash
+# Full verification for date range
+python scripts/01_extract/gdelt_verify.py \
+  --start 2025-11-01 \
+  --end 2025-11-10 \
+  --frequency 1d
+
+# Quick completeness check only
+python scripts/01_extract/gdelt_verify.py \
+  --start 2025-11-01 \
+  --end 2025-11-10 \
+  --frequency 1d \
+  --completeness-only
+
+# Show missing intervals
+python scripts/01_extract/gdelt_verify.py \
+  --start 2025-11-01 \
+  --end 2025-11-10 \
+  --frequency 1d \
+  --show-missing
+```
+
+**Checks:**
+- Data completeness (missing intervals)
+- Sentiment value ranges (tone, polarity)
+- Duplicate timestamps
+- Article count statistics
+- Extreme sentiment dates
+
 ### Setup
 
 #### `setup_bigquery_tables.py` - BigQuery Schema Setup
@@ -109,39 +168,66 @@ GCP_PROJECT_ID=your-project-id
 BQ_DATASET=raw_dataset
 BQ_TABLE=tickers_raw
 BQ_SYNTHETIC_TABLE=tickers_synthetic
+BQ_GDELT_TABLE=gdelt_sentiment
+BQ_GDELT_STAGING_TABLE=gdelt_sentiment_staging
 POLYGON_API_KEY=your-polygon-api-key
 ```
 
 ### Tickers Config (`configs/tickers.yaml`)
 ```yaml
 tickers:
-  inflation:
-    - SPY  # S&P 500
-    - QQQ  # NASDAQ 100
-  credit:
-    - LQD  # Investment Grade Bonds
-    - HYG  # High Yield Bonds
-  commodities:
-    - GLD  # Gold
-    - USO  # Oil
+  - SPY  # S&P 500
+  - QQQ  # NASDAQ 100
+  - IWM  # Russell 2000
+  - RSP  # Equal-Weight S&P 500
+  # ... more tickers
 
-default_frequency: daily
-default_start_date: "2022-01-01"
-default_end_date: "2025-05-05"
+date_range:
+  start_date: '2015-11-12'
+  end_date: '2025-11-13'
 
 indicators:
+  - returns
+  - volatility_20
+  - momentum_10
   - sma_50
   - sma_200
-  - ema_12
-  - ema_26
-  - rsi_14
-  - macd
-  - bb_upper
-  - bb_lower
+  # ... more indicators
+```
+
+### GDELT Config (`configs/gdelt.yaml`)
+```yaml
+topics:
+  # Inflation & prices
+  - INFLATION
+  - DEFLATION
+  - CPI
+  - PCE
+  - CONSUMER_PRICE
+  - PRICE_STABILITY
+  - COST_OF_LIVING
+
+date_range:
+  start_date: '2015-11-12'
+  end_date: '2025-11-13'
+
+aggregation:
+  frequency: '1d'  # Daily aggregation (15m, 1h, 4h, 1d, 1w)
+  weight_by_word_count: true
+
+bigquery:
+  table_name: 'gdelt_sentiment'
+  staging_table_name: 'gdelt_sentiment_staging'
+  partition_by: 'date'
+
+quality:
+  require_tone: true
+  min_word_count: 0
 ```
 
 ## Data Flow
 
+### Tickers Pipeline
 ```
 1. Polygon.io API
    ↓
@@ -158,6 +244,21 @@ indicators:
 7. Merge to tickers_synthetic
    ↓
 8. tickers_verify.py (validation)
+```
+
+### GDELT Pipeline
+```
+1. GDELT Public BigQuery Dataset (gdelt-bq.gdeltv2.gkg)
+   ↓
+2. gdelt_load.py (query & filter by topics)
+   ↓
+3. Resample to target frequency (15m → 1d)
+   ↓
+4. BigQuery (gdelt_sentiment_staging)
+   ↓
+5. Merge to gdelt_sentiment (deduplicate)
+   ↓
+6. gdelt_verify.py (validation)
 ```
 
 ## BigQuery Schema
@@ -205,6 +306,27 @@ PARTITION BY DATE(timestamp)
 CLUSTER BY ticker, frequency;
 ```
 
+### GDELT Table (`gdelt_sentiment`)
+```sql
+CREATE TABLE gdelt_sentiment (
+  timestamp TIMESTAMP NOT NULL,
+  date DATE NOT NULL,
+  frequency STRING NOT NULL,
+  weighted_avg_tone FLOAT64,
+  weighted_avg_positive FLOAT64,
+  weighted_avg_negative FLOAT64,
+  weighted_avg_polarity FLOAT64,
+  num_articles INT64,
+  num_sources INT64,
+  total_word_count INT64,
+  min_tone FLOAT64,
+  max_tone FLOAT64,
+  ingestion_timestamp TIMESTAMP
+)
+PARTITION BY date
+CLUSTER BY frequency;
+```
+
 ## Common Workflows
 
 ### Initial Setup
@@ -243,6 +365,18 @@ python scripts/01_extract/tickers_verify.py \
   --export
 
 # Output: temp/tickers_verification_output.{parquet,csv}
+```
+
+### Load GDELT Sentiment Data
+```bash
+# Load daily sentiment data
+python scripts/01_extract/gdelt_load.py --config configs/gdelt.yaml
+
+# Verify data quality
+python scripts/01_extract/gdelt_verify.py \
+  --start 2025-11-01 \
+  --end 2025-11-10 \
+  --frequency 1d
 ```
 
 ## Error Handling

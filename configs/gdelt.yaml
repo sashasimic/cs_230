@@ -1,0 +1,92 @@
+# GDELT Sentiment Configuration for BigQuery Data Extraction
+# Economic Cycle & Inflation Forecasting Framework
+# Mission: Track news sentiment around inflation, Fed policy, and economic themes
+
+# Topics/themes to track from GDELT GKG
+# GDELT uses UPPERCASE with underscores (e.g., FEDERAL_RESERVE)
+topics:
+  # # ========================================
+  # # A. MONETARY POLICY & CENTRAL BANKS
+  # # ========================================
+  # - FED
+  # - FEDERAL_RESERVE
+  # - INTEREST_RATE
+  # - MONETARY_POLICY
+  # - CENTRAL_BANK
+  # - FOMC
+  # - JEROME_POWELL
+  
+  # ========================================
+  # B. INFLATION & PRICES
+  # ========================================
+  - INFLATION
+  - DEFLATION
+  - CPI
+  - PCE
+  - CONSUMER_PRICE
+  - PRICE_STABILITY
+  - COST_OF_LIVING
+  
+  # # ========================================
+  # # C. ECONOMIC INDICATORS
+  # # ========================================
+  # - RECESSION
+  # - ECONOMIC_GROWTH
+  # - GDP
+  # - UNEMPLOYMENT
+  # - JOBS_REPORT
+  # - LABOR_MARKET
+  # - WAGE_GROWTH
+  
+  # # ========================================
+  # # D. FINANCIAL MARKETS
+  # # ========================================
+  # - STOCK_MARKET
+  # - BOND_MARKET
+  # - TREASURY_YIELD
+  # - YIELD_CURVE
+  # - MARKET_VOLATILITY
+  # - VIX
+  
+  # # ========================================
+  # # E. COMMODITIES & ENERGY
+  # # ========================================
+  # - OIL_PRICE
+  # - CRUDE_OIL
+  # - ENERGY_PRICES
+  # - COMMODITY_PRICES
+  # - GOLD_PRICE
+
+# Date range for extraction
+date_range:
+  start_date: '2025-11-01'  # 10 years of data
+  end_date: '2025-11-10'
+
+aggregation:
+  # Aggregation frequency
+  # Options:
+  #   - '15m'  : 15-minute intervals (GDELT native, most granular)
+  #   - '1h'   : Hourly aggregation
+  #   - '4h'   : 4-hour aggregation
+  #   - '1d'   : Daily aggregation (recommended for training)
+  #   - '1w'   : Weekly aggregation
+  frequency: '1d'  # Daily aggregation (matches typical ticker frequency)
+  weight_by_word_count: true  # Weight sentiment by article length
+
+# BigQuery configuration
+# NOTE: All BigQuery settings (project_id, dataset_id, table_name) are
+# configured via environment variables in .env (see .env.example)
+# This allows for easier deployment across different environments
+
+# BigQuery configuration
+# NOTE: Project ID and dataset ID are configured via environment variables
+# in .env (see .env.example): GCP_PROJECT_ID, BQ_DATASET
+bigquery:
+  table_name: 'gdelt_sentiment'
+  staging_table_name: 'gdelt_sentiment_staging'
+  partition_by: 'date'  # Day partitioning
+  
+# Data quality filters (applied during query)
+quality:
+  require_tone: true  # Skip articles without tone data
+  min_word_count: 0  # Minimum word count per article (0 = no filter)
