@@ -20,12 +20,12 @@ topics:
   # B. INFLATION & PRICES
   # ========================================
   - INFLATION
-  - DEFLATION
   - CPI
   - PCE
   - CONSUMER_PRICE
   - PRICE_STABILITY
   - COST_OF_LIVING
+  - FOOD_PRICE
   
   # # ========================================
   # # C. ECONOMIC INDICATORS
@@ -59,8 +59,8 @@ topics:
 
 # Date range for extraction
 date_range:
-  start_date: '2025-11-01'  # 10 years of data
-  end_date: '2025-11-10'
+  start_date: '2022-01-01'  # 10 years of data
+  end_date: '2025-05-05'
 
 aggregation:
   # Aggregation frequency

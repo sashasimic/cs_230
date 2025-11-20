@@ -117,7 +117,10 @@ Verifies synthetic indicators.
 Verifies GDELT sentiment data quality and completeness.
 
 ```bash
-# Full verification for date range
+# Use dates from config (configs/gdelt.yaml)
+python scripts/01_extract/gdelt_verify.py --frequency 1d
+
+# Full verification for specific date range
 python scripts/01_extract/gdelt_verify.py \
   --start 2025-11-01 \
   --end 2025-11-10 \
@@ -125,15 +128,11 @@ python scripts/01_extract/gdelt_verify.py \
 
 # Quick completeness check only
 python scripts/01_extract/gdelt_verify.py \
-  --start 2025-11-01 \
-  --end 2025-11-10 \
   --frequency 1d \
   --completeness-only
 
 # Show missing intervals
 python scripts/01_extract/gdelt_verify.py \
-  --start 2025-11-01 \
-  --end 2025-11-10 \
   --frequency 1d \
   --show-missing
 ```
@@ -379,8 +378,41 @@ python scripts/01_extract/gdelt_verify.py \
   --frequency 1d
 ```
 
+## Working Without Polygon API Access
+
+If you don't have a Polygon.io API key, you can still work with existing ticker data.
+
+**Automatic Skip Logic:**
+- Scripts automatically check if data exists in BigQuery before calling Polygon API
+- If data is found for a ticker+frequency, the Polygon API call is **automatically skipped**
+- This allows users without API access to work seamlessly with existing data
+- Use `--reload` flag only if you need to force re-fetching from Polygon
+
+**Example - Running without API key:**
+```bash
+# This works fine if data already exists in BigQuery
+python scripts/01_extract/tickers_load.py --frequency daily
+
+# Output:
+[1/5] 📊 Processing SPY...
+  ⏭️  SKIPPED: SPY already has data in BigQuery (use --reload to overwrite)
+[2/5] 📊 Processing QQQ...
+  ⏭️  SKIPPED: QQQ already has data in BigQuery (use --reload to overwrite)
+...
+✅ Pipeline completed successfully
+```
+
+**If data doesn't exist:**
+```bash
+# Clear error message if API key is missing and data doesn't exist
+[1/5] 📊 Processing NEWticker...
+  ❌ ERROR: NEWticker has no data in BigQuery and POLYGON_API_KEY is not set
+     Cannot fetch data from Polygon.io without API key
+```
+
 ## Error Handling
 
+- **No Polygon API key**: Scripts automatically skip tickers that already have data in BigQuery
 - **API rate limits**: Scripts automatically handle Polygon.io rate limits with retries
 - **Missing data**: Gaps are logged and can be inspected with verification scripts
 - **Duplicates**: Automatic deduplication on (ticker, timestamp, frequency) during merge

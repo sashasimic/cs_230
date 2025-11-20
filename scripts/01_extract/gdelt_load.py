@@ -37,7 +37,7 @@ STAGING_TABLE_NAME = os.environ.get('BQ_GDELT_STAGING_TABLE', 'gdelt_sentiment_s
 # GDELT public BigQuery dataset
 GDELT_PROJECT = 'gdelt-bq'
 GDELT_DATASET = 'gdeltv2'
-GDELT_TABLE = 'gkg'
+GDELT_TABLE = 'gkg_partitioned'  # Use partitioned table for 28x cost reduction
 
 # Default topics to track
 DEFAULT_TOPICS = [
@@ -92,8 +92,12 @@ def build_gdelt_query(
         FROM `{GDELT_PROJECT}.{GDELT_DATASET}.{GDELT_TABLE}`
         
         WHERE
+            -- Partition filter (reduces cost by 28x - only scans relevant days)
+            _PARTITIONTIME >= TIMESTAMP("{start_date}")
+            AND _PARTITIONTIME <= TIMESTAMP("{end_date}")
+            
             -- Date range filter (DATE is INT64 in format YYYYMMDDHHMMSS)
-            DATE >= {start_date.replace("-", "")}000000
+            AND DATE >= {start_date.replace("-", "")}000000
             AND DATE <= {end_date.replace("-", "")}235959
             
             -- Topic filter (must mention at least one topic)

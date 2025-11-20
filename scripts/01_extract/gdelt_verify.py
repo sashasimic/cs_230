@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from google.cloud import bigquery
 from typing import Dict, List, Tuple
 from pathlib import Path
+import yaml
 
 # Load environment variables
 try:
@@ -28,6 +29,18 @@ except ImportError:
 PROJECT_ID = os.environ.get('GCP_PROJECT_ID')
 DATASET_ID = os.environ.get('BQ_DATASET', 'raw_dataset')
 GDELT_TABLE = os.environ.get('BQ_GDELT_TABLE', 'gdelt_sentiment')
+
+
+def load_config(config_path: str = 'configs/gdelt.yaml') -> dict:
+    """Load GDELT configuration from YAML file."""
+    if not os.path.exists(config_path):
+        print(f"⚠️  Config file not found: {config_path}")
+        return {}
+    
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    return config
 DEFAULT_FREQUENCY = os.environ.get('GDELT_FREQUENCY', '15m')  # GDELT native frequency
 
 
@@ -452,34 +465,43 @@ def main():
         description='Verify GDELT sentiment data quality and completeness',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  # Full verification for date range
-  python gdelt_verify.py --start 2025-11-11 --end 2025-11-18
+  # Use dates from config (configs/gdelt.yaml)
+  python gdelt_verify.py --frequency 1d
+  
+  # Full verification for specific date range
+  python gdelt_verify.py --start 2025-11-11 --end 2025-11-18 --frequency 1d
   
   # Export sample data to temp/
   python gdelt_verify.py --start 2025-11-11 --end 2025-11-18 --export
   
   # Quick completeness check only
-  python gdelt_verify.py --start 2025-11-11 --end 2025-11-18 --completeness-only
+  python gdelt_verify.py --frequency 1d --completeness-only
   
   # Show daily statistics
-  python gdelt_verify.py --start 2025-11-11 --end 2025-11-18 --show-daily-stats
+  python gdelt_verify.py --frequency 1d --show-daily-stats
         """
+    )
+    parser.add_argument(
+        '--config',
+        type=str,
+        default='configs/gdelt.yaml',
+        help='Path to GDELT config file (default: configs/gdelt.yaml)'
     )
     parser.add_argument(
         '--start',
         '--start-date',
         dest='start_date',
         type=str,
-        required=True,
-        help='Start date (YYYY-MM-DD)'
+        required=False,
+        help='Start date (YYYY-MM-DD), defaults to config'
     )
     parser.add_argument(
         '--end',
         '--end-date',
         dest='end_date',
         type=str,
-        required=True,
-        help='End date (YYYY-MM-DD)'
+        required=False,
+        help='End date (YYYY-MM-DD), defaults to config'
     )
     parser.add_argument(
         '--frequency',
@@ -522,17 +544,38 @@ def main():
         print("   Set it in your .env file")
         sys.exit(1)
     
+    # Load config for default dates
+    config = load_config(args.config)
+    
+    # Determine dates (CLI args override config)
+    start_date = args.start_date
+    end_date = args.end_date
+    
+    if not start_date or not end_date:
+        if 'date_range' in config:
+            start_date = start_date or config['date_range'].get('start_date')
+            end_date = end_date or config['date_range'].get('end_date')
+            print(f"📋 Using dates from {args.config}")
+        else:
+            print("❌ Error: No dates provided and no date_range in config")
+            print("   Provide --start and --end, or add date_range to config")
+            sys.exit(1)
+    
     # Validate dates
     try:
-        start = datetime.strptime(args.start_date, '%Y-%m-%d')
-        end = datetime.strptime(args.end_date, '%Y-%m-%d')
+        start = datetime.strptime(start_date, '%Y-%m-%d')
+        end = datetime.strptime(end_date, '%Y-%m-%d')
         
         if end < start:
-            print("Error: end_date must be >= start_date")
+            print("❌ Error: end_date must be >= start_date")
             sys.exit(1)
     except ValueError:
-        print("Error: Dates must be in YYYY-MM-DD format")
+        print("❌ Error: Dates must be in YYYY-MM-DD format")
         sys.exit(1)
+    
+    # Update args with resolved dates
+    args.start_date = start_date
+    args.end_date = end_date
     
     # Initialize BigQuery client
     client = bigquery.Client(project=PROJECT_ID)

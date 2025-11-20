@@ -753,8 +753,11 @@ def ingest_polygon_data(
         print("❌ Error: GCP_PROJECT_ID not set")
         return
     
-    if not POLYGON_API_KEY:
-        print("❌ Error: POLYGON_API_KEY not set")
+    # Note: POLYGON_API_KEY is checked later only if we need to fetch data
+    # If data already exists and --reload is not set, we skip the API call
+    # This allows users without Polygon access to work with existing data
+    if not POLYGON_API_KEY and (flush_existing or purge_tickers):
+        print("❌ Error: POLYGON_API_KEY not set (required for --reload/--purge)")
         return
     
     if frequency not in FREQUENCY_MAP:
@@ -804,6 +807,7 @@ def ingest_polygon_data(
         print(f"[{ticker_idx}/{len(tickers)}] 📊 Processing {ticker}...")
         
         # Check if ticker already has data (unless reload flag is set)
+        # This allows users without Polygon API access to work with existing data
         if not flush_existing and not purge_tickers:
             ticker_exists = check_ticker_exists(bq_client, ticker, frequency)
             if ticker_exists:
@@ -811,6 +815,14 @@ def ingest_polygon_data(
                 print()
                 skipped_tickers.append(ticker)
                 continue
+        
+        # If we reach here, we need to fetch from Polygon - check API key
+        if not POLYGON_API_KEY:
+            print(f"  ❌ ERROR: {ticker} has no data in BigQuery and POLYGON_API_KEY is not set")
+            print(f"     Cannot fetch data from Polygon.io without API key")
+            print()
+            skipped_tickers.append(ticker)
+            continue
         
         # Top-up mode: Check for latest data and adjust start_date
         ticker_start_date = start_date
