@@ -59,8 +59,8 @@ data:
   # GDELT SENTIMENT DATA SOURCE (GDELT GKG → BigQuery)
   # ============================================================
   gdelt:
-    enabled: false  # Set to false to exclude GDELT features (NO DATA AVAILABLE)
-    frequency: 'daily'  # Must match ticker frequency for alignment
+    enabled: true  # Set to true to include GDELT features
+    frequency: '1d'  # Must match what's stored in BigQuery (use '1d' not 'daily')
     
     # Sentiment features
     features:
@@ -70,9 +70,9 @@ data:
       - num_sources             # Source diversity
     
     # Feature engineering
-    normalize_counts: true      # Normalize article/source counts
-    include_lags: true          # Include lagged sentiment (t-1, t-2)
-    lag_periods: [1, 4, 16]     # 15min, 1hr, 4hr ago
+    normalize_counts: true      # Normalize article/source counts (log1p transform)
+    include_lags: true          # Include lagged sentiment (t-1, t-2, etc.)
+    lag_periods: [1, 7, 30]     # 1 day, 1 week, 1 month ago (for daily frequency)
   
   # ============================================================
   # GENERAL DATA CONFIGURATION
@@ -89,11 +89,20 @@ data:
   prediction_horizons: [4, 8, 16]  # 1h, 2h, 4h ahead (matches dataset v3)
   
   # Target variable
-  target: 'returns'  # Predict returns (stationary, better for ML)
+  target: 'agriculture_basket_returns'  # Average return of WEAT, SOYB, RJA (food inflation proxy)
   
   # Normalization
   normalize: true
   normalization_method: 'standard'  # 'standard' or 'minmax'
+  
+  # Weekend handling (for daily frequency)
+  skip_weekends: true  # Remove Saturday/Sunday from dataset (markets closed)
+  
+  # Forward filling for missing values
+  forward_fill:
+    enabled: true  # Fill missing values with last known value
+    log_stats: true  # Log detailed statistics about forward filling
+    max_fill_limit: 5  # Maximum consecutive periods to forward fill (prevents stale data)
 
 # Model Architecture
 model:
@@ -109,8 +118,9 @@ model:
   # Variable selection network (VSN)
   use_variable_selection: true  # Enable VSN for feature importance learning
   
-  # Static covariates (if any)
-  static_features: []          # e.g., ticker_id, frequency_encoded
+  # Static covariates (constant for each time series)
+  static_features:
+    - ticker  # Ticker symbol (SPY, QQQ, IWM, RSP) - helps model learn ticker-specific patterns
   
   # Time-varying known features (future known)
   # Note: Current SimplifiedTFT treats all features the same, but we list them separately for clarity
@@ -152,15 +162,15 @@ model:
     # - macd_signal              # MACD signal line (MISSING DATA)
     # - macd_hist                # MACD histogram (MISSING DATA)
     
-    # ===== GDELT SENTIMENT FEATURES (DISABLED - NO DATA) =====
-    # - weighted_avg_tone        # News sentiment (-10 to +10)
-    # - weighted_avg_polarity    # Sentiment strength
-    # - num_articles             # Media attention (normalized)
-    # - num_sources              # Source diversity (normalized)
+    # ===== GDELT SENTIMENT FEATURES (ENABLED) =====
+    - weighted_avg_tone        # News sentiment (-10 to +10)
+    - weighted_avg_polarity    # Sentiment strength
+    - num_articles             # Media attention (log-normalized)
+    - num_sources              # Source diversity (log-normalized)
     # Lagged sentiment (if enabled in data.gdelt.include_lags)
-    # - sentiment_lag_1          # Sentiment 15min ago
-    # - sentiment_lag_4          # Sentiment 1hr ago
-    # - sentiment_lag_16         # Sentiment 4hr ago
+    - sentiment_lag_1          # Sentiment 1 day ago
+    - sentiment_lag_7          # Sentiment 1 week ago
+    - sentiment_lag_30         # Sentiment 1 month ago
 
 # Training Configuration
 training:

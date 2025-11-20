@@ -53,6 +53,7 @@ class MultiTickerDataLoader:
         # GDELT config
         self.use_gdelt = self.config['data']['gdelt'].get('enabled', False)
         if self.use_gdelt:
+            self.gdelt_frequency = self.config['data']['gdelt'].get('frequency', self.frequency)  # Use GDELT-specific frequency
             self.gdelt_features = self.config['data']['gdelt']['features']
             self.gdelt_normalize_counts = self.config['data']['gdelt'].get('normalize_counts', True)
             self.gdelt_include_lags = self.config['data']['gdelt'].get('include_lags', True)
@@ -62,6 +63,15 @@ class MultiTickerDataLoader:
         self.normalize = self.config['data']['normalize']
         self.norm_method = self.config['data']['normalization_method']
         self.scalers = {}
+        
+        # Weekend filtering
+        self.skip_weekends = self.config['data'].get('skip_weekends', False)
+        
+        # Forward filling config
+        self.forward_fill_config = self.config['data'].get('forward_fill', {})
+        self.forward_fill_enabled = self.forward_fill_config.get('enabled', True)
+        self.forward_fill_log_stats = self.forward_fill_config.get('log_stats', True)
+        self.forward_fill_max_limit = self.forward_fill_config.get('max_fill_limit', 5)
         
         # Export settings
         self.export_temp = export_temp
@@ -117,7 +127,7 @@ class MultiTickerDataLoader:
         dataset_id = self.config['bigquery']['dataset_id']
         gdelt_table = self.config['bigquery']['gdelt']['table']
         
-        print(f"Fetching GDELT sentiment data ({self.frequency})...")
+        print(f"Fetching GDELT sentiment data ({self.gdelt_frequency})...")
         
         # Build feature list for SQL
         gdelt_cols = ', '.join([f'g.{col}' for col in self.gdelt_features])
@@ -127,13 +137,172 @@ class MultiTickerDataLoader:
             g.timestamp,
             {gdelt_cols}
         FROM `{self.project_id}.{dataset_id}.{gdelt_table}` g
-        WHERE g.frequency = '{self.frequency}'
+        WHERE g.frequency = '{self.gdelt_frequency}'
             AND DATE(g.timestamp) BETWEEN '{self.start_date}' AND '{self.end_date}'
         ORDER BY g.timestamp
         """
         
         df = self.client.query(query).to_dataframe()
         print(f"✅ Fetched {len(df):,} GDELT rows")
+        
+        return df
+    
+    def fetch_agriculture_basket(self) -> pd.DataFrame:
+        """Fetch agriculture basket (WEAT, SOYB, RJA) for target computation."""
+        dataset_id = self.config['bigquery']['dataset_id']
+        raw_table = self.config['bigquery']['ticker']['raw_table']
+        
+        agriculture_tickers = ['WEAT', 'SOYB', 'RJA']
+        ticker_list = "', '".join(agriculture_tickers)
+        
+        print(f"\nFetching agriculture basket for target: {', '.join(agriculture_tickers)}...")
+        
+        query = f"""
+        SELECT 
+            timestamp,
+            ticker,
+            close
+        FROM `{self.project_id}.{dataset_id}.{raw_table}`
+        WHERE ticker IN ('{ticker_list}')
+            AND frequency = '{self.frequency}'
+            AND DATE(timestamp) BETWEEN '{self.start_date}' AND '{self.end_date}'
+        ORDER BY timestamp, ticker
+        """
+        
+        df = self.client.query(query).to_dataframe()
+        
+        if len(df) == 0:
+            print("⚠️  Warning: No agriculture basket data found!")
+            print(f"   Make sure WEAT, SOYB, RJA are loaded for frequency '{self.frequency}'")
+            return None
+        
+        # Pivot to get one column per ticker
+        df_pivot = df.pivot(index='timestamp', columns='ticker', values='close')
+        
+        # Compute average close price across available tickers (skip NaN)
+        # This ensures we average only available tickers if some are missing
+        df_pivot['agriculture_basket_close'] = df_pivot[agriculture_tickers].mean(axis=1, skipna=True)
+        
+        # Count how many tickers contributed to each average
+        df_pivot['num_tickers_available'] = df_pivot[agriculture_tickers].notna().sum(axis=1)
+        
+        # Keep only the average column
+        result = df_pivot[['agriculture_basket_close']].reset_index()
+        
+        print(f"✅ Fetched {len(result):,} agriculture basket rows")
+        for ticker in agriculture_tickers:
+            if ticker in df_pivot.columns:
+                count = df_pivot[ticker].notna().sum()
+                print(f"   {ticker}: {count:,} rows")
+        
+        # Show statistics on ticker availability
+        ticker_counts = df_pivot['num_tickers_available'].value_counts().sort_index()
+        print(f"\n   Ticker availability per timestamp:")
+        for num_tickers, count in ticker_counts.items():
+            print(f"      {int(num_tickers)} ticker(s): {count:,} timestamps ({count/len(result)*100:.1f}%)")
+        
+        return result
+    
+    def compute_basket_target(self, ticker_df: pd.DataFrame, basket_df: pd.DataFrame) -> pd.DataFrame:
+        """Join agriculture basket close prices to ticker data for target computation."""
+        if basket_df is None:
+            print("⚠️  Warning: No agriculture basket data - cannot compute target!")
+            return ticker_df
+        
+        print("\nJoining agriculture basket for target computation...")
+        
+        # Left join to preserve all ticker timestamps
+        df = ticker_df.merge(basket_df, on='timestamp', how='left')
+        
+        # Forward fill missing basket values
+        missing_before = df['agriculture_basket_close'].isnull().sum()
+        if missing_before > 0:
+            df = self.forward_fill_with_stats(df, ['agriculture_basket_close'], context="Agriculture basket")
+        
+        print(f"✅ Joined agriculture basket, shape: {df.shape}")
+        
+        return df
+    
+    def filter_weekends(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Remove weekend data (Saturday/Sunday) if configured."""
+        if not self.skip_weekends:
+            return df
+        
+        # Ensure timestamp is datetime
+        if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        initial_rows = len(df)
+        # Filter out weekends (dayofweek: 5=Saturday, 6=Sunday)
+        df = df[df['timestamp'].dt.dayofweek < 5].copy()
+        removed_rows = initial_rows - len(df)
+        
+        if removed_rows > 0:
+            print(f"🗓️  Filtered out {removed_rows:,} weekend rows ({removed_rows/initial_rows*100:.1f}%)")
+            print(f"   Remaining: {len(df):,} weekday rows")
+        
+        return df
+    
+    def forward_fill_with_stats(self, df: pd.DataFrame, columns: List[str], context: str = "") -> pd.DataFrame:
+        """Forward fill missing values with detailed statistics logging.
+        
+        Args:
+            df: DataFrame to fill
+            columns: List of column names to forward fill
+            context: Description for logging (e.g., 'GDELT features', 'All features')
+        
+        Returns:
+            DataFrame with forward filled values
+        """
+        if not self.forward_fill_enabled:
+            return df
+        
+        df = df.copy()
+        fill_stats = {}
+        total_filled = 0
+        
+        for col in columns:
+            if col not in df.columns:
+                continue
+            
+            # Count missing before
+            missing_before = df[col].isnull().sum()
+            if missing_before == 0:
+                continue
+            
+            # Forward fill with limit
+            df[col] = df[col].fillna(method='ffill', limit=self.forward_fill_max_limit)
+            
+            # Count missing after
+            missing_after = df[col].isnull().sum()
+            filled_count = missing_before - missing_after
+            total_filled += filled_count
+            
+            fill_stats[col] = {
+                'missing_before': missing_before,
+                'filled': filled_count,
+                'still_missing': missing_after,
+                'pct_filled': (filled_count / missing_before * 100) if missing_before > 0 else 0
+            }
+        
+        # Log statistics if enabled
+        if self.forward_fill_log_stats and fill_stats:
+            print(f"\n🔧 Forward Fill Statistics{' (' + context + ')' if context else ''}:")
+            print(f"   Max consecutive fills: {self.forward_fill_max_limit} periods")
+            print(f"   Total values filled: {total_filled:,}")
+            print(f"\n   {'Column':<30} {'Missing':<10} {'Filled':<10} {'Still Missing':<15} {'% Filled':<10}")
+            print(f"   {'-'*85}")
+            
+            for col, stats in fill_stats.items():
+                print(f"   {col:<30} {stats['missing_before']:<10,} {stats['filled']:<10,} "
+                      f"{stats['still_missing']:<15,} {stats['pct_filled']:<10.1f}%")
+            
+            # Warn about columns that still have missing values
+            still_missing_cols = [col for col, stats in fill_stats.items() if stats['still_missing'] > 0]
+            if still_missing_cols:
+                print(f"\n   ⚠️  Warning: {len(still_missing_cols)} column(s) still have missing values after forward fill:")
+                for col in still_missing_cols:
+                    print(f"      - {col}: {fill_stats[col]['still_missing']:,} missing")
         
         return df
     
@@ -148,9 +317,7 @@ class MultiTickerDataLoader:
         df = ticker_df.merge(gdelt_df, on='timestamp', how='left')
         
         # Forward fill missing GDELT values (for gaps in sentiment data)
-        for col in self.gdelt_features:
-            if col in df.columns:
-                df[col] = df[col].fillna(method='ffill')
+        df = self.forward_fill_with_stats(df, self.gdelt_features, context="GDELT features")
         
         # Normalize article/source counts if configured
         if self.gdelt_normalize_counts:
@@ -162,10 +329,14 @@ class MultiTickerDataLoader:
         
         # Add lagged sentiment features if configured
         if self.gdelt_include_lags and 'weighted_avg_tone' in df.columns:
+            lag_cols = []
             for lag in self.gdelt_lag_periods:
-                df[f'sentiment_lag_{lag}'] = df['weighted_avg_tone'].shift(lag)
+                col_name = f'sentiment_lag_{lag}'
+                df[col_name] = df['weighted_avg_tone'].shift(lag)
+                lag_cols.append(col_name)
+            
             # Forward fill NaN from initial lags
-            df = df.fillna(method='ffill')
+            df = self.forward_fill_with_stats(df, lag_cols, context="GDELT lagged features")
             print(f"✅ Added lagged sentiment features: {self.gdelt_lag_periods}")
         
         print(f"✅ Joined GDELT features, final shape: {df.shape}")
@@ -185,17 +356,33 @@ class MultiTickerDataLoader:
             df = ticker_df
             print("⚠️  GDELT features disabled in config")
         
-        # Check for missing values
+        # Fetch and join agriculture basket for target computation
+        basket_df = self.fetch_agriculture_basket()
+        df = self.compute_basket_target(df, basket_df)
+        
+        # Filter weekends if configured (after joining all data)
+        df = self.filter_weekends(df)
+        
+        # Check for remaining missing values
         missing = df.isnull().sum()
         if missing.any():
-            print(f"⚠️  Warning: Missing values detected:")
-            print(missing[missing > 0])
+            missing_cols = missing[missing > 0].index.tolist()
+            print(f"\n⚠️  Warning: {len(missing_cols)} column(s) have missing values:")
+            for col in missing_cols[:10]:  # Show first 10
+                print(f"   - {col}: {missing[col]:,} missing ({missing[col]/len(df)*100:.2f}%)")
+            if len(missing_cols) > 10:
+                print(f"   ... and {len(missing_cols)-10} more")
             
-            # Forward fill remaining missing values
-            df = df.fillna(method='ffill')
-            # Backward fill for any remaining (at start)
-            df = df.fillna(method='bfill')
-            print(f"✅ Filled missing values (forward + backward fill)")
+            # Forward fill remaining missing values with stats
+            df = self.forward_fill_with_stats(df, missing_cols, context="Remaining features")
+            
+            # Backward fill for any remaining (at start of series)
+            still_missing = df.isnull().sum()
+            if still_missing.any():
+                still_missing_cols = still_missing[still_missing > 0].index.tolist()
+                print(f"\n🔙 Backward filling {len(still_missing_cols)} column(s) for initial NaNs...")
+                df = df.fillna(method='bfill')
+                print(f"✅ Backward fill complete")
         
         return df
     
@@ -294,8 +481,16 @@ class MultiTickerDataLoader:
         print(f"📊 Using {len(all_features)} features: {len(time_varying_known)} known + {len(time_varying_unknown)} unknown")
         
         feature_data = df[all_features].values
-        # Get close prices for computing true multi-horizon returns
-        close_prices = df['close'].values
+        
+        # Get target prices for computing true multi-horizon returns
+        # Use agriculture basket if available, otherwise use ticker close price
+        if 'agriculture_basket_close' in df.columns:
+            target_prices = df['agriculture_basket_close'].values
+            print(f"🌾 Using agriculture basket (WEAT+SOYB+RJA avg) as target")
+        else:
+            target_prices = df['close'].values
+            print(f"📊 Using ticker close price as target")
+        
         timestamps = df['timestamp'].values
         
         max_horizon = max(self.horizons)
@@ -307,10 +502,10 @@ class MultiTickerDataLoader:
             # Input: lookback window of features
             X.append(feature_data[i - self.lookback:i])
             
-            # Target: TRUE k-period forward returns from current close
-            # Formula: (close[t+k] - close[t]) / close[t]
-            current_close = close_prices[i]
-            targets = [(close_prices[i + h] - current_close) / current_close for h in self.horizons]
+            # Target: TRUE k-period forward returns from current price
+            # Formula: (price[t+k] - price[t]) / price[t]
+            current_price = target_prices[i]
+            targets = [(target_prices[i + h] - current_price) / current_price for h in self.horizons]
             y.append(targets)
             
             # Timestamp of prediction point

@@ -5,3 +5,10 @@ v1:
   gcs_base_path: gs://inflation-prediction-478715-models/datasets/v1/
   raw_dataset_id: projects/233829279510/locations/us-central1/datasets/7378388776667578368
   processed_dataset_id: N/A
+v2:
+  version: v2
+  local_path: data/datasets/v2
+  created: '2025-11-19T22:01:06.952219'
+  gcs_base_path: gs://inflation-prediction-478715-models/datasets/v2/
+  raw_dataset_id: projects/233829279510/locations/us-central1/datasets/2390652189354754048
+  processed_dataset_id: N/A

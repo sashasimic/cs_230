@@ -41,7 +41,10 @@ ENV/
 data/raw/*
 data/processed/*
 data/dummy/*
-!data/**/.gitkeep
+data/datasets/  # Versioned datasets (uploaded to GCS, tracked in datasets_registry.yaml)
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/dummy/.gitkeep
 
 # Logs and outputs
 logs/**/*
