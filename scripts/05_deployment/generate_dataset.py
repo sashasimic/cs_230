@@ -1,19 +1,51 @@
 #!/usr/bin/env python3
 """
-Generate Dataset for Cloud Training (Vertex AI)
+Dataset Generation and GCS Upload Script
 
-This script generates both raw and processed data for model training,
-uploads to GCS, and creates Vertex AI Managed Datasets.
+This script generates versioned datasets for model training and uploads them to GCS.
+It supports multiple model types with automatic data loader selection.
+
+ MODEL-TYPE-SPECIFIC DATA LOADERS:
+   The script dynamically loads the appropriate data loader based on --model-type:
+   
+   - 'tft' → scripts/02_features/tft/tft_data_loader.py (MultiTickerDataLoader)
+   - 'lstm' → scripts/02_features/lstm/lstm_data_loader.py (LSTMDataLoader)
+   - 'transformer' → scripts/02_features/transformer/transformer_data_loader.py (TransformerDataLoader)
+   
+   Each data loader implements its own feature engineering pipeline and exports
+   model-specific features to data/raw/ and data/processed/.
+
+ VERSIONING STRUCTURE:
+   Datasets are stored with model-type-specific paths:
+   
+   Local:  data/datasets/{model_type}/{version}/
+   GCS:    gs://bucket/datasets/{model_type}/{version}/
+   
+   Example:
+   - data/datasets/tft/v1/raw/tft_features.csv
+   - data/datasets/tft/v1/processed/X_train.npy
+   - gs://my-bucket/datasets/tft/v1/
+
+ WORKFLOW:
+   1. Load model-specific data loader (based on --model-type)
+   2. Generate features from BigQuery using that loader
+   3. Export to data/datasets/{model_type}/{version}/
+   4. Upload to gs://bucket/datasets/{model_type}/{version}/
+   5. Register in datasets_registry.yaml
+   6. Create Vertex AI Managed Datasets
 
 Usage:
-    # Generate dataset v1 and upload to GCS
-    python scripts/05_deployment/generate_dataset.py --version v1
+    # Generate TFT dataset version 1
+    python generate_dataset.py --version v1 --model-type tft
     
-    # Use existing local data (skip generation, just upload)
-    python scripts/05_deployment/generate_dataset.py --version v1 --use-existing
+    # Generate LSTM dataset version 1
+    python generate_dataset.py --version v1 --model-type lstm
     
-    # Specify custom GCS bucket
-    python scripts/05_deployment/generate_dataset.py --version v1 --gcs-bucket my-custom-bucket
+    # Use existing local data (skip generation)
+    python generate_dataset.py --version v1 --model-type tft --use-existing
+    
+    # Delete old versions
+    python generate_dataset.py --delete-versions v1 v2 v3
 """
 
 import argparse
@@ -25,32 +57,85 @@ import importlib.util
 from pathlib import Path
 from datetime import datetime
 
-# Dynamically import MultiTickerDataLoader (can't use standard import due to numeric prefix in '02_features')
-data_loader_path = Path(__file__).parent.parent / '02_features' / 'tft' / 'tft_data_loader.py'
-spec = importlib.util.spec_from_file_location('tft_data_loader', data_loader_path)
-data_loader_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(data_loader_module)
-MultiTickerDataLoader = data_loader_module.MultiTickerDataLoader
+
+def load_data_loader_for_model(model_type: str):
+    """
+    Dynamically load the appropriate data loader based on model type.
+    
+    Args:
+        model_type: Model type ('tft', 'lstm', 'transformer', etc.)
+    
+    Returns:
+        Data loader class for the specified model type
+    
+    Raises:
+        ValueError: If model type is not supported
+    """
+    # Map model types to their data loader paths and class names
+    model_loaders = {
+        'tft': {
+            'path': Path(__file__).parent.parent / '02_features' / 'tft' / 'tft_data_loader.py',
+            'module_name': 'tft_data_loader',
+            'class_name': 'MultiTickerDataLoader'
+        },
+        'lstm': {
+            'path': Path(__file__).parent.parent / '02_features' / 'lstm' / 'lstm_data_loader.py',
+            'module_name': 'lstm_data_loader',
+            'class_name': 'LSTMDataLoader'
+        },
+        'transformer': {
+            'path': Path(__file__).parent.parent / '02_features' / 'transformer' / 'transformer_data_loader.py',
+            'module_name': 'transformer_data_loader',
+            'class_name': 'TransformerDataLoader'
+        }
+    }
+    
+    if model_type not in model_loaders:
+        available = ', '.join(model_loaders.keys())
+        raise ValueError(f"Unsupported model type '{model_type}'. Available: {available}")
+    
+    loader_config = model_loaders[model_type]
+    loader_path = loader_config['path']
+    
+    if not loader_path.exists():
+        raise FileNotFoundError(
+            f"Data loader not found for model type '{model_type}' at: {loader_path}\n"
+            f"Please ensure the data loader exists or use a supported model type."
+        )
+    
+    # Dynamically import the data loader module
+    spec = importlib.util.spec_from_file_location(loader_config['module_name'], loader_path)
+    data_loader_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(data_loader_module)
+    
+    # Get the data loader class
+    DataLoaderClass = getattr(data_loader_module, loader_config['class_name'])
+    
+    print(f"\n📦 Loaded data loader: {loader_config['class_name']} for model type '{model_type}'")
+    print(f"   Path: {loader_path}")
+    
+    return DataLoaderClass
 
 
-def generate_data(config_path: str, version: str, base_dir: str = 'data/datasets') -> dict:
+def generate_data(config_path: str, version: str, model_type: str = 'tft', base_dir: str = 'data/datasets') -> dict:
     """
     Generate raw and processed data using unified logic.
     
     Args:
         config_path: Path to model config YAML
         version: Dataset version (e.g., 'v1', 'v2', 'nov2024')
+        model_type: Model type for versioning (e.g., 'tft', 'lstm')
         base_dir: Base directory for dataset storage
     
     Returns:
         Dictionary with paths to generated data
     """
     print("\n" + "="*80)
-    print(f"   GENERATING DATASET: {version}")
+    print(f"   GENERATING DATASET: {model_type}/{version}")
     print("="*80)
     
-    # Create version directory
-    version_dir = Path(base_dir) / version
+    # Create model-type-specific version directory
+    version_dir = Path(base_dir) / model_type / version
     raw_dir = version_dir / 'raw'
     processed_dir = version_dir / 'processed'
     
@@ -61,21 +146,29 @@ def generate_data(config_path: str, version: str, base_dir: str = 'data/datasets
     print(f"   Raw: {raw_dir}")
     print(f"   Processed: {processed_dir}")
     
-    # Step 1: Generate data using MultiTickerDataLoader pipeline
+    # Step 1: Load appropriate data loader for model type
     print("\n" + "-"*80)
-    print("STEP 1: Preparing data from BigQuery")
+    print(f"STEP 1: Preparing data using {model_type.upper()} data loader")
     print("-"*80)
     
-    loader = MultiTickerDataLoader(config_path=config_path)
+    try:
+        DataLoaderClass = load_data_loader_for_model(model_type)
+    except (ValueError, FileNotFoundError) as e:
+        print(f"\n❌ Error: {e}")
+        sys.exit(1)
+    
+    # Initialize and run data loader
+    loader = DataLoaderClass(config_path=config_path)
     splits = loader.prepare_data()
+    
     # prepare_data() automatically exports to:
-    #   - data/raw/tft_features.{csv,parquet}
+    #   - data/raw/{model_type}_features.{csv,parquet}
     #   - data/processed/X_*.npy, y_*.npy, ts_*.npy (9 files for 3 splits)
     #   - data/processed/scalers.pkl
     #   - data/processed/metadata.yaml
     
     print("\n✅ Data generated by data loader:")
-    print(f"   Raw: data/raw/tft_features.{{csv,parquet}}")
+    print(f"   Raw: data/raw/ (model-specific features)")
     print(f"   Processed: data/processed/X_*.npy, y_*.npy, ts_*.npy")
     print(f"   Metadata: data/processed/{{scalers.pkl,metadata.yaml,feature_names.txt}}")
     
@@ -167,6 +260,7 @@ def upload_to_gcs(version: str, gcs_bucket: str, base_dir: str = 'data/datasets'
     print(f"   UPLOADING TO GCS")
     print("="*80)
     
+    # version already includes model_type (e.g., 'tft/v1')
     version_dir = Path(base_dir) / version
     gcs_base_path = f"gs://{gcs_bucket}/datasets/{version}/"
     
@@ -206,9 +300,9 @@ def upload_to_gcs(version: str, gcs_bucket: str, base_dir: str = 'data/datasets'
         if all_blobs:
             print(f"   ✅ Found {len(all_blobs)} files on GCS")
             
-            # Define expected files
+            # Define expected files (model-agnostic check)
             expected_files = {
-                'raw': ['tft_features.csv', 'tft_features.parquet'],
+                'raw': [],  # Skip specific file checks, model-dependent
                 'processed': [
                     'X_train.npy', 'y_train.npy', 'ts_train.npy',
                     'X_val.npy', 'y_val.npy', 'ts_val.npy',
@@ -303,16 +397,17 @@ def upload_to_gcs(version: str, gcs_bucket: str, base_dir: str = 'data/datasets'
     return gcs_base_path
 
 
-def create_managed_dataset(version: str, gcs_bucket: str, project: str, region: str) -> dict:
+def create_managed_dataset(version: str, gcs_bucket: str, project: str, region: str, model_type: str = 'tft') -> dict:
     """
     Create Vertex AI Managed Datasets for raw and processed data.
     Uses TabularDataset with CSV files to enable schema viewing in Vertex AI Console.
     
     Args:
-        version: Dataset version
+        version: Dataset version (e.g., 'tft/v2' or just 'v2')
         gcs_bucket: GCS bucket name
         project: GCP project ID
         region: GCP region
+        model_type: Model type (e.g., 'tft', 'lstm')
     
     Returns:
         Dictionary with dataset IDs
@@ -345,37 +440,45 @@ def create_managed_dataset(version: str, gcs_bucket: str, project: str, region: 
             print(f"   ⚠️  Could not check for existing dataset: {e}")
         return None
     
-    # Create Raw Managed Dataset (CSV for schema analysis)
-    raw_display_name = f"tft_raw_{version}"
-    print(f"\n🔍 Checking for existing raw dataset '{raw_display_name}'...")
+    # Create Managed Dataset for CSV schema viewing
+    # Note: This is ONLY for viewing the feature schema in Vertex AI Console.
+    # Actual training loads .npy files directly from GCS (much faster).
+    # Convert version path to valid display name (replace / with -)
+    # e.g., 'tft/v2' -> 'tft-v2-features-csv'
+    version_safe = version.replace('/', '-')
+    raw_display_name = f"{version_safe}-features-csv"
+    print(f"\n🔍 Checking for existing schema dataset '{raw_display_name}'...")
     raw_dataset = find_existing_dataset(raw_display_name)
     
     if raw_dataset:
         print(f"   ♻️  Reusing existing dataset: {raw_dataset.resource_name}")
     else:
-        print(f"\n🏗️  Creating raw dataset (using CSV for schema)...")
+        print(f"\n🏗️  Creating Managed Dataset (CSV for schema viewing only)...")
         try:
             raw_dataset = aiplatform.TabularDataset.create(
                 display_name=raw_display_name,
                 gcs_source=f"{gcs_base_path}raw/tft_features.csv",
                 labels={
-                    'version': version.replace('.', '_'),  # Labels can't have dots
-                    'type': 'raw',
-                    'purpose': 'inspection'
+                    'model_type': model_type,
+                    'version': version.replace('/', '-').replace('.', '_'),  # Labels can't have dots or slashes
+                    'type': 'schema',
+                    'purpose': 'inspection',
+                    'note': 'training_uses_npy_files'
                 },
                 sync=True
             )
-            print(f"   ✅ Raw Dataset: {raw_dataset.resource_name}")
-            print(f"   📊 Schema: Viewable in Vertex AI Console")
+            print(f"   ✅ Managed Dataset: {raw_dataset.resource_name}")
+            print(f"   📊 Purpose: View feature schema in Vertex AI Console")
+            print(f"   ⚠️  Note: Training loads .npy files directly, not this CSV")
         except Exception as e:
             print(f"   ⚠️  Warning: Could not create raw dataset: {e}")
             raw_dataset = None
     
     # Note: No Managed Dataset for processed data (numpy arrays)
-    # Training jobs load .npy files directly from GCS
-    print(f"\n💡 Note: Processed data is in NumPy format (.npy)")
-    print(f"   Training jobs load directly from: {gcs_base_path}processed/X_*.npy")
-    print(f"   No Managed Dataset needed for numpy arrays")
+    # Training jobs load .npy files directly from GCS - much faster than CSV!
+    print(f"\n💡 Training Data Location:")
+    print(f"   Training jobs load .npy files from: {gcs_base_path}processed/X_*.npy")
+    print(f"   The Managed Dataset above is ONLY for viewing schema, not for training")
     processed_dataset = None
     
     datasets = {
@@ -386,8 +489,8 @@ def create_managed_dataset(version: str, gcs_bucket: str, project: str, region: 
         'created': datetime.now().isoformat()
     }
     
-    print(f"\n💡 Note: Managed Dataset (raw) uses CSV for schema viewing.")
-    print(f"   Training jobs load NumPy arrays (.npy) directly - fastest format!")
+    print(f"\n💡 Note: Managed Dataset '{raw_display_name}' is for schema viewing only.")
+    print(f"   Training jobs load NumPy arrays (.npy) directly from GCS - fastest format!")
     
     return datasets
 
@@ -572,6 +675,8 @@ Examples:
     
     parser.add_argument('--version', type=str, required=False,
                        help='Dataset version (e.g., v1, v2, nov2024)')
+    parser.add_argument('--model-type', type=str, default='tft',
+                       help='Model type for dataset versioning (default: tft)')
     parser.add_argument('--delete-versions', type=str, nargs='+',
                        help='Delete specified dataset versions (e.g., --delete-versions v1 v2)')
     parser.add_argument('--config', type=str, default='configs/model_tft_config.yaml',
@@ -628,14 +733,18 @@ Examples:
     if args.version.lower() in poor_names:
         print(f"\n⚠️  Warning: '{args.version}' is not a good version name.")
         print(f"   Recommended: Use semantic versions like 'v1', 'v2', or dates like '2024-11'")
-        response = input(f"\n   Continue with '{args.version}' anyway? [y/N]: ")
-        if response.lower() != 'y':
-            print("\n❌ Aborted.")
+        print(f"   Your current version: {args.version}")
+        confirm = input("\n   Continue anyway? [y/N]: ")
+        if confirm.lower() != 'y':
+            print("\n❌ Cancelled.")
             return
     
-    # Check if version already exists (multiple locations)
-    version_dir = Path(args.base_dir) / args.version
+    # Calculate paths with model type
+    version_dir = Path(args.base_dir) / args.model_type / args.version
     registry_file = Path('datasets_registry.yaml')
+    
+    # Full version key includes model type (e.g., 'tft/v1')
+    full_version_key = f"{args.model_type}/{args.version}"
     
     # Check local directory
     local_exists = version_dir.exists()
@@ -646,33 +755,33 @@ Examples:
     if registry_file.exists():
         with open(registry_file, 'r') as f:
             registry = yaml.safe_load(f) or {}
-        registry_exists = args.version in registry
+        registry_exists = full_version_key in registry
     
     # Check GCS (via registry)
     gcs_exists = registry_exists  # If in registry, it's in GCS
     
     # Handle conflicts
     if (local_exists or registry_exists) and not args.use_existing:
-        print(f"\n⚠️  Dataset version '{args.version}' already exists:")
+        print(f"\n⚠️  Dataset version '{full_version_key}' already exists:")
         if local_exists:
             print(f"   📂 Local: {version_dir}")
         if registry_exists:
             print(f"   📊 Registry: datasets_registry.yaml")
         if gcs_exists:
-            gcs_path = registry.get(args.version, {}).get('gcs_base_path', 'Unknown')
+            gcs_path = registry.get(full_version_key, {}).get('gcs_base_path', 'Unknown')
             print(f"   ☁️  GCS: {gcs_path}")
         
         print(f"\n💡 Options:")
         print(f"   1. Use existing data (recommended): --use-existing")
         print(f"   2. Create new version: --version v{int(args.version[1:])+1 if args.version.startswith('v') and args.version[1:].isdigit() else '2'}")
-        print(f"   3. Overwrite {args.version} (destructive): Continue below")
+        print(f"   3. Overwrite {full_version_key} (destructive): Continue below")
         
-        response = input(f"\n⚠️  Overwrite version '{args.version}'? [y/N]: ")
+        response = input(f"\n⚠️  Overwrite version '{full_version_key}'? [y/N]: ")
         if response.lower() != 'y':
             print("\n❌ Aborted. No changes made.")
             return
         else:
-            print(f"\n⚠️  Proceeding with overwrite of version '{args.version}'...")
+            print(f"\n⚠️  Proceeding with overwrite of version '{full_version_key}'...")
     
     try:
         # Step 1: Generate data locally
@@ -684,24 +793,27 @@ Examples:
             with open(manifest_file, 'r') as f:
                 manifest = yaml.safe_load(f)
         else:
-            manifest = generate_data(args.config, args.version, args.base_dir)
+            manifest = generate_data(args.config, args.version, args.model_type, args.base_dir)
         
         datasets_info = {
-            'version': args.version,
+            'version': f"{args.model_type}/{args.version}",
+            'model_type': args.model_type,
+            'version_number': args.version,
             'local_path': str(version_dir),
             'created': manifest.get('created', datetime.now().isoformat())
         }
         
         # Step 2: Upload to GCS
-        gcs_base_path = upload_to_gcs(args.version, args.gcs_bucket, args.base_dir)
+        gcs_base_path = upload_to_gcs(f"{args.model_type}/{args.version}", args.gcs_bucket, args.base_dir)
         datasets_info['gcs_base_path'] = gcs_base_path
         
         # Step 3: Create Managed Datasets
         managed_datasets = create_managed_dataset(
-            args.version,
+            f"{args.model_type}/{args.version}",  # Full version path (e.g., 'tft/v1')
             args.gcs_bucket,
             args.project,
-            args.region
+            args.region,
+            args.model_type
         )
         
         if managed_datasets:
@@ -722,10 +834,10 @@ Examples:
         
         print(f"\n💡 Next steps:")
         print(f"   # Single training job:")
-        print(f"   python scripts/05_deployment/submit_job.py --dataset-version {args.version}")
+        print(f"   python scripts/05_deployment/submit_job.py --dataset-version {args.version} --model-type {args.model_type}")
         print(f"   ")
         print(f"   # Hyperparameter tuning (all trials share this dataset):")
-        print(f"   python scripts/05_deployment/submit_hp_tuning.py --dataset-version {args.version}")
+        print(f"   python scripts/05_deployment/submit_hp_tuning.py --dataset-version {args.version} --model-type {args.model_type}")
         
     except Exception as e:
         print(f"\n❌ Error: {e}")

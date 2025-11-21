@@ -455,14 +455,16 @@ class MultiTickerDataLoader:
         
         return df
     
-    def create_sequences(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def create_sequences(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.ndarray, pd.DataFrame]:
         """
         Create lookback sequences and multi-horizon targets.
+        Groups by timestamp to ensure each unique date appears only once.
         
         Returns:
             X: [num_samples, lookback, num_features]
             y: [num_samples, num_horizons]
             timestamps: [num_samples]
+            grouped: Pivoted dataframe (one row per date with ticker-specific columns)
         """
         # Combine all features: time-varying known + unknown + time features
         time_varying_known = self.config['model'].get('time_varying_known', [])
@@ -475,30 +477,93 @@ class MultiTickerDataLoader:
         # Combine all features: time_varying_known first, then time_varying_unknown
         all_features = list(time_varying_known) + list(time_varying_unknown)
         
-        # Only use features that exist in the dataframe
-        all_features = [f for f in all_features if f in df.columns]
+        # Note: Don't filter here - pivoting will create ticker-specific columns
+        print(f"📊 Config features: {len(all_features)} total ({len(time_varying_known)} known + {len(time_varying_unknown)} unknown)")
         
-        print(f"📊 Using {len(all_features)} features: {len(time_varying_known)} known + {len(time_varying_unknown)} unknown")
+        # Pivot data: one row per timestamp with ticker-specific columns
+        print(f"\n⚠️  Pivoting by timestamp to prevent data leakage...")
+        print(f"   Before: {len(df):,} rows (multiple tickers per date)")
         
-        feature_data = df[all_features].values
+        # Identify ticker-specific vs shared features
+        ticker_features = ['close', 'volume', 'sma_50', 'sma_200']
+        gdelt_features = ['weighted_avg_tone', 'weighted_avg_polarity', 'num_articles', 
+                         'num_sources', 'sentiment_lag_1', 'sentiment_lag_7', 'sentiment_lag_30']
+        time_features = ['month_sin', 'month_cos', 'is_weekend']
+        
+        # Get unique tickers (sorted for consistency)
+        if 'ticker' in df.columns:
+            tickers = sorted(df['ticker'].unique())
+            print(f"   Found {len(tickers)} tickers: {', '.join(tickers)}")
+            
+            # Start with timestamps
+            timestamps = sorted(df['timestamp'].unique())
+            grouped = pd.DataFrame({'timestamp': timestamps})
+            
+            # Pivot ticker-specific features
+            for ticker in tickers:
+                ticker_data = df[df['ticker'] == ticker].set_index('timestamp')
+                for feat in ticker_features:
+                    if feat in df.columns:
+                        col_name = f'{feat}_{ticker}'
+                        grouped[col_name] = grouped['timestamp'].map(ticker_data[feat])
+            
+            # Add shared features (GDELT and time) - take first value for each timestamp
+            for feat in gdelt_features + time_features:
+                if feat in df.columns:
+                    feat_values = df.groupby('timestamp')[feat].first()
+                    grouped[feat] = grouped['timestamp'].map(feat_values)
+            
+            # Add agriculture basket
+            if 'agriculture_basket_close' in df.columns:
+                basket_values = df.groupby('timestamp')['agriculture_basket_close'].first()
+                grouped['agriculture_basket_close'] = grouped['timestamp'].map(basket_values)
+            
+            # Update all_features to include ticker-specific columns
+            new_features = []
+            for feat in all_features:
+                if feat in ticker_features:
+                    # Replace with ticker-specific versions
+                    new_features.extend([f'{feat}_{ticker}' for ticker in tickers])
+                else:
+                    # Keep GDELT and time features as-is
+                    new_features.append(feat)
+            all_features = new_features
+            
+            # Save final features for metadata export
+            self.final_features = all_features
+            
+            print(f"   ✅ Created {len(ticker_features) * len(tickers)} ticker-specific features")
+            print(f"   Total features: {len(all_features)} = {len(ticker_features)*len(tickers)} ticker + {len(gdelt_features)} GDELT + {len(time_features)} time")
+        else:
+            # No ticker column, just group by timestamp (shouldn't happen)
+            grouped = df.groupby('timestamp').first().reset_index()
+            print(f"   ⚠️  No ticker column found, using first value per timestamp")
+        
+        # Store final feature list for metadata
+        self.final_features = all_features
+        
+        print(f"   After: {len(grouped):,} rows (one per unique date)")
+        print(f"   ✅ Each date now appears exactly once")
+        
+        feature_data = grouped[all_features].values
         
         # Get target prices for computing true multi-horizon returns
         # Use agriculture basket if available, otherwise use ticker close price
-        if 'agriculture_basket_close' in df.columns:
-            target_prices = df['agriculture_basket_close'].values
+        if 'agriculture_basket_close' in grouped.columns:
+            target_prices = grouped['agriculture_basket_close'].values
             print(f"🌾 Using agriculture basket (WEAT+SOYB+RJA avg) as target")
         else:
-            target_prices = df['close'].values
+            target_prices = grouped['close'].values
             print(f"📊 Using ticker close price as target")
         
-        timestamps = df['timestamp'].values
+        timestamps = grouped['timestamp'].values
         
         max_horizon = max(self.horizons)
         
         X, y, ts = [], [], []
         
-        # Create sequences
-        for i in range(self.lookback, len(df) - max_horizon):
+        # Create sequences (use grouped data length)
+        for i in range(self.lookback, len(grouped) - max_horizon):
             # Input: lookback window of features
             X.append(feature_data[i - self.lookback:i])
             
@@ -511,7 +576,7 @@ class MultiTickerDataLoader:
             # Timestamp of prediction point
             ts.append(timestamps[i])
         
-        return np.array(X), np.array(y), np.array(ts)
+        return np.array(X), np.array(y), np.array(ts), grouped
     
     def split_data(self, X: np.ndarray, y: np.ndarray, ts: np.ndarray
                    ) -> Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
@@ -553,9 +618,15 @@ class MultiTickerDataLoader:
         output_dir.mkdir(parents=True, exist_ok=True)
         
         # Get feature list from config (same as create_sequences)
-        time_varying_known = self.config['model'].get('time_varying_known', [])
-        time_varying_unknown = self.config['model']['time_varying_unknown']
-        all_features = list(time_varying_known) + list(time_varying_unknown)
+        # Use final_features if available (after pivoting), otherwise use config
+        if hasattr(self, 'final_features'):
+            all_features = self.final_features
+            time_varying_known = self.config['model'].get('time_varying_known', [])
+            time_varying_unknown = [f for f in all_features if f not in time_varying_known]
+        else:
+            time_varying_known = self.config['model'].get('time_varying_known', [])
+            time_varying_unknown = self.config['model']['time_varying_unknown']
+            all_features = list(time_varying_known) + list(time_varying_unknown)
         
         print(f"\n" + "="*80)
         print(f"   Saving Processed Data (NumPy Arrays)")
@@ -632,6 +703,7 @@ class MultiTickerDataLoader:
             'val_samples': len(splits['val'][0]),
             'test_samples': len(splits['test'][0]),
             'total_features': len(all_features),
+            'features': all_features,  # Actual feature list (after pivoting)
             'time_varying_known': time_varying_known,
             'time_varying_unknown': time_varying_unknown,
             'array_shapes': {
@@ -694,28 +766,39 @@ class MultiTickerDataLoader:
         self._export_raw_with_targets(df, raw_dir)
     
     def _export_raw_with_targets(self, df_raw: pd.DataFrame, output_dir: Path):
-        """Export raw (non-normalized) data with computed target labels."""
+        """Export raw (non-normalized) pivoted data with computed target labels.
         
-        # df_raw is already in original scale (not normalized)
-        # No need to inverse transform
+        df_raw is the grouped/pivoted dataframe with one row per date and ticker-specific columns.
+        """
         df_raw = df_raw.copy()
         
         # Add target labels (TRUE k-period forward returns)
-        # Formula: (close[t+k] - close[t]) / close[t]
+        # Use agriculture basket if available, otherwise use first ticker close
+        if 'agriculture_basket_close' in df_raw.columns:
+            target_price_col = 'agriculture_basket_close'
+            print(f"  🌾 Computing targets from agriculture basket")
+        else:
+            # Find first ticker close column
+            close_cols = [c for c in df_raw.columns if c.startswith('close_')]
+            target_price_col = close_cols[0] if close_cols else 'close'
+            print(f"  📊 Computing targets from {target_price_col}")
+        
+        # Formula: (price[t+k] - price[t]) / price[t]
         for horizon in self.horizons:
             col_name = f'target_{horizon}periods_ahead'
-            # Compute true multi-horizon return from current close to future close
-            df_raw[col_name] = (df_raw['close'].shift(-horizon) - df_raw['close']) / df_raw['close']
+            df_raw[col_name] = (df_raw[target_price_col].shift(-horizon) - df_raw[target_price_col]) / df_raw[target_price_col]
         
-        # Add helpful columns
-        df_raw['hour'] = pd.to_datetime(df_raw['timestamp']).dt.hour
-        df_raw['day_of_week'] = pd.to_datetime(df_raw['timestamp']).dt.day_name()
+        # Add helpful time columns if not present
+        if 'hour' not in df_raw.columns:
+            df_raw['hour'] = pd.to_datetime(df_raw['timestamp']).dt.hour
+        if 'day_of_week' not in df_raw.columns:
+            df_raw['day_of_week'] = pd.to_datetime(df_raw['timestamp']).dt.day_name()
         
-        # Reorder columns for readability
-        cols_order = ['timestamp', 'hour', 'day_of_week'] + self.raw_features
+        # Reorder columns for readability: timestamp, time info, then all features, then targets
+        time_cols = ['timestamp', 'hour', 'day_of_week']
         target_cols = [c for c in df_raw.columns if c.startswith('target_')]
-        other_cols = [c for c in df_raw.columns if c not in cols_order and c not in target_cols]
-        df_raw = df_raw[cols_order + other_cols + target_cols]
+        feature_cols = [c for c in df_raw.columns if c not in time_cols and c not in target_cols]
+        df_raw = df_raw[time_cols + feature_cols + target_cols]
         
         # Export to CSV and Parquet (clean naming)
         csv_file = output_dir / 'tft_features.csv'
@@ -733,7 +816,14 @@ class MultiTickerDataLoader:
         print(f"     Rows: {len(df_raw):,}")
         print(f"\n  📋 Sample (first row):")
         print(f"     Time: {df_raw['timestamp'].iloc[0]}")
-        print(f"     Close: ${df_raw['close'].iloc[0]:.2f}")
+        
+        # After pivoting, close columns are ticker-specific (e.g., close_SPY, close_QQQ)
+        close_cols = [col for col in df_raw.columns if col.startswith('close_')]
+        if close_cols:
+            # Show first ticker's close price as example
+            first_close_col = close_cols[0]
+            print(f"     {first_close_col}: ${df_raw[first_close_col].iloc[0]:.2f}")
+        
         if len(target_cols) > 0:
             for tc in target_cols:
                 val = df_raw[tc].iloc[0]
@@ -782,17 +872,14 @@ class MultiTickerDataLoader:
         # Add time features (before normalization)
         df = self.add_time_features(df)
         
-        # Save raw data before normalization (for validation export)
-        df_raw = df.copy()
-        
-        # Create sequences from RAW data
+        # Create sequences from RAW data (pivoting happens inside)
         print(f"\n" + "="*80)
         print(f"   Creating Time-Series Sequences")
         print("="*80)
         print(f"\n  Lookback window: {self.lookback} periods")
         print(f"  Prediction horizons: {self.horizons} periods")
         print(f"  Processing {len(df):,} timesteps...")
-        X_raw, y_raw, ts = self.create_sequences(df)
+        X_raw, y_raw, ts, df_raw = self.create_sequences(df)
         print(f"\n✅ Created {len(X_raw):,} sequences")
         print(f"   Input shape: ({len(X_raw)}, {self.lookback}, {X_raw.shape[2]})")
         print(f"   Targets shape: ({y_raw.shape[0]}, {y_raw.shape[1]})")

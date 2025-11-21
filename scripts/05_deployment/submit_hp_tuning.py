@@ -38,7 +38,8 @@ def submit_hyperparameter_tuning_job(
     accelerator_count=1,  # 1 GPU per trial
     max_trial_count=20,  # Total trials to run
     parallel_trial_count=4,  # How many to run simultaneously
-    dataset_version=None,  # NEW: Dataset version to use
+    dataset_version=None,  # Dataset version (e.g., 'v1', 'v2')
+    model_type='tft',  # Model type (e.g., 'tft', 'lstm', 'transformer')
 ):
     """
     Submit a hyperparameter tuning job using Vertex AI's native service.
@@ -49,7 +50,8 @@ def submit_hyperparameter_tuning_job(
         machine_type: GCE machine type
         max_trial_count: Maximum number of trials to run
         parallel_trial_count: Number of trials to run in parallel
-        dataset_version: Dataset version to use (e.g., 'v1', 'v2'). If not provided, each trial generates from BigQuery.
+        dataset_version: Dataset version (e.g., 'v1', 'v2'). If not provided, each trial generates from BigQuery.
+        model_type: Model type (e.g., 'tft', 'lstm', 'transformer')
     
     Returns:
         HyperparameterTuningJob object
@@ -69,11 +71,13 @@ def submit_hyperparameter_tuning_job(
     print(f"   Vertex AI Hyperparameter Tuning Job")
     print(f"{'='*80}")
     print(f"Job Name: {job_name}")
+    print(f"Model Type: {model_type}")
     print(f"Algorithm: Bayesian Optimization (default)")
     print(f"Max Trials: {max_trial_count}")
     print(f"Parallel Trials: {parallel_trial_count}")
     if dataset_version:
-        print(f"Dataset Version: {dataset_version} (shared across all trials)")
+        full_dataset_version = f"{model_type}/{dataset_version}"
+        print(f"Dataset Version: {full_dataset_version} (shared across all trials)")
     else:
         print(f"Dataset: Each trial will generate from BigQuery")
     print(f"{'='*80}\n")
@@ -121,12 +125,15 @@ def submit_hyperparameter_tuning_job(
     container_args = [
         f'--gcs_bucket={GCS_BUCKET}',
         f'--job_name={job_name}',
+        f'--model_type={model_type}',  # Pass model type to training wrapper
     ]
     
-    # Add dataset version if provided (NEW)
+    # Add dataset version if provided
     # All trials will share the same dataset!
+    # Construct full dataset path: model_type/version (e.g., 'tft/v1')
     if dataset_version:
-        container_args.append(f'--dataset_version={dataset_version}')
+        full_dataset_version = f"{model_type}/{dataset_version}"
+        container_args.append(f'--dataset_version={full_dataset_version}')
     
     worker_pool_specs = [{
         'machine_spec': {
@@ -173,20 +180,23 @@ if __name__ == '__main__':
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Submit Vertex AI hyperparameter tuning job')
     parser.add_argument('--dataset-version', type=str, default=None,
-                       help='Dataset version to use (e.g., v1, v2). If not provided, each trial generates from BigQuery.')
+                       help='Dataset version to use (e.g., v1, v2). Combined with model-type to form full path.')
+    parser.add_argument('--model-type', type=str, default='tft',
+                       help='Model type (e.g., tft, lstm, transformer). Default: tft')
     parser.add_argument('--job-name', type=str, default=None,
                        help='Job name (auto-generated if not provided)')
     args = parser.parse_args()
     
     # GPU-enabled (default) - 2-3x faster per trial!
-    job = submit_hyperparameter_tuning_job(
-        job_name=args.job_name or 'model-hp-tuning-gpu',
+    submit_hyperparameter_tuning_job(
+        job_name=args.job_name,
+        dataset_version=args.dataset_version,
+        model_type=args.model_type,
         machine_type='n1-standard-4',        # N1 supports GPUs (~$0.19/hr)
         accelerator_type='NVIDIA_TESLA_T4',   # T4 GPU (~$0.35/hr)
         accelerator_count=1,                  # 1 GPU per trial
         max_trial_count=20,
         parallel_trial_count=4,  # 4 parallel trials = 4 GPUs running simultaneously!
-        dataset_version=args.dataset_version,  # NEW
     )
     
     # CPU-only option (uncomment to use - cheaper but slower)

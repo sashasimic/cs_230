@@ -38,7 +38,8 @@ def submit_training_job(
     accelerator_type='NVIDIA_TESLA_T4',  # T4 GPU enabled by default
     accelerator_count=1,  # 1 GPU
     use_spot=True,  # Use spot instances for faster provisioning & lower cost
-    dataset_version=None,  # NEW: Dataset version to use
+    dataset_version=None,  # Dataset version (e.g., 'v1', 'v2')
+    model_type='tft',  # Model type (e.g., 'tft', 'lstm', 'transformer')
     **hyperparameters
 ):
     """
@@ -50,7 +51,8 @@ def submit_training_job(
         accelerator_type: GPU type (optional)
         accelerator_count: Number of GPUs
         use_spot: Use spot (preemptible) instances
-        dataset_version: Dataset version to use (e.g., 'v1', 'v2'). If not provided, generates from BigQuery.
+        dataset_version: Dataset version (e.g., 'v1', 'v2'). If not provided, generates from BigQuery.
+        model_type: Model type (e.g., 'tft', 'lstm', 'transformer')
         **hyperparameters: Model hyperparameters to pass
     """
     
@@ -68,11 +70,14 @@ def submit_training_job(
     args = [
         f'--gcs_bucket={GCS_BUCKET}',
         f'--job_name={job_name}',
+        f'--model_type={model_type}',  # Pass model type to training wrapper
     ]
     
-    # Add dataset version if provided (NEW)
+    # Add dataset version if provided
+    # Construct full dataset path: model_type/version (e.g., 'tft/v1')
     if dataset_version:
-        args.append(f'--dataset_version={dataset_version}')
+        full_dataset_version = f"{model_type}/{dataset_version}"
+        args.append(f'--dataset_version={full_dataset_version}')
     
     for key, value in hyperparameters.items():
         args.append(f'--{key}={value}')
@@ -81,10 +86,12 @@ def submit_training_job(
     print(f"   Submitting Vertex AI Training Job")
     print(f"{'='*80}")
     print(f"Job Name: {job_name}")
+    print(f"Model Type: {model_type}")
     print(f"Machine: {machine_type}")
     print(f"Image: {IMAGE_URI}")
     if dataset_version:
-        print(f"Dataset Version: {dataset_version} (pre-generated)")
+        full_dataset_version = f"{model_type}/{dataset_version}"
+        print(f"Dataset Version: {full_dataset_version} (pre-generated)")
     else:
         print(f"Dataset: Will generate from BigQuery")
     print(f"Args: {args}")
@@ -153,7 +160,9 @@ if __name__ == '__main__':
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Submit Vertex AI training job')
     parser.add_argument('--dataset-version', type=str, default=None,
-                       help='Dataset version to use (e.g., v1, v2). If not provided, generates from BigQuery.')
+                       help='Dataset version to use (e.g., v1, v2). Combined with model-type to form full path.')
+    parser.add_argument('--model-type', type=str, default='tft',
+                       help='Model type (e.g., tft, lstm, transformer). Default: tft')
     parser.add_argument('--job-name', type=str, default='model-test-run-cpu',
                        help='Job name')
     args = parser.parse_args()
@@ -183,6 +192,7 @@ if __name__ == '__main__':
         accelerator_type=None,
         accelerator_count=0,
         dataset_version=args.dataset_version,
+        model_type=args.model_type,
         # No hyperparameters - use config file defaults
     )
     

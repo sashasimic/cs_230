@@ -27,13 +27,18 @@ sys.path.insert(0, str(project_root))
 class SimplifiedTFT(nn.Module):
     """Simplified Temporal Fusion Transformer for multi-horizon forecasting."""
     
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, num_features: int = None):
         super().__init__()
         
         # Extract config
         time_varying_known = config['model'].get('time_varying_known', [])
         time_varying_unknown = config['model']['time_varying_unknown']
-        self.num_features = len(time_varying_known) + len(time_varying_unknown)
+        # Use actual feature count from data if provided (accounts for pivoting)
+        # Otherwise fallback to config count (for backward compatibility)
+        if num_features is not None:
+            self.num_features = num_features
+        else:
+            self.num_features = len(time_varying_known) + len(time_varying_unknown)
         self.hidden_size = config['model']['hidden_size']
         self.lstm_layers = config['model']['lstm_layers']
         self.attention_heads = config['model']['attention_heads']
@@ -241,11 +246,14 @@ def train_epoch(model: nn.Module, dataloader, criterion, optimizer, device, epoc
         loss = criterion(predictions, batch_y)
         loss.backward()
         
-        # Track gradients
+        # Track gradients before clipping
         grad_norm = compute_grad_norm(model)
         grad_norms.append(grad_norm)
         
-        # Get detailed layer stats for first batch only
+        # Clip gradients to prevent explosion/vanishing
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
+        # Get detailed layer stats for first batch only (after clipping)
         if batch_idx == 0:
             layer_grad_stats = compute_layer_grad_stats(model)
         
@@ -322,10 +330,34 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     print(f"\n➡️  Total Features (config): {total_config_features}")
     print(f"➡️  Total Features (actual data): {num_features}")
     
-    if total_config_features != num_features:
-        print(f"\n⚠️  WARNING: Feature count mismatch!")
-        print(f"   Config expects {total_config_features} features")
-        print(f"   Data has {num_features} features")
+    # Load and print actual final features being used
+    # Note: Config shows 14 base features, but data has more after pivoting (e.g., close_SPY, close_QQQ)
+    try:
+        from pathlib import Path
+        import yaml
+        
+        # Load from metadata.yaml (should exist in data/processed/)
+        metadata_path = Path('data/processed/metadata.yaml')
+        if metadata_path.exists():
+            with open(metadata_path, 'r') as f:
+                metadata = yaml.safe_load(f)
+                if 'features' in metadata:
+                    actual_features = metadata['features']
+                    print(f"\n📋 ACTUAL FEATURES USED IN TRAINING ({len(actual_features)}):")
+                    print(f"   (Ticker-specific features created through pivoting)")
+                    print(f"")
+                    for i, feat in enumerate(actual_features, 1):
+                        print(f"   {i:2d}. {feat}")
+                else:
+                    print(f"\n⚠️  'features' key not found in metadata.yaml")
+        else:
+            print(f"\n⚠️  metadata.yaml not found at {metadata_path}")
+            print(f"   Cannot display individual feature names")
+            print(f"   Config features (14) are expanded to {num_features} after pivoting")
+    except Exception as e:
+        print(f"\n⚠️  Could not load actual feature names: {e}")
+        import traceback
+        traceback.print_exc()
     
     # Output targets
     horizons_config = config['data']['prediction_horizons']
@@ -394,7 +426,8 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     print("   Initializing TFT Model")
     print("="*80)
     
-    model = SimplifiedTFT(config).to(device)
+    # Pass actual feature count from data (after pivoting)
+    model = SimplifiedTFT(config, num_features=num_features).to(device)
     
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())

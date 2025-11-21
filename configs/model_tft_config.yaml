@@ -134,35 +134,13 @@ model:
   
   # Time-varying unknown features (past-only, not known in future)
   time_varying_unknown:
-    # ===== TICKER OHLCV & INDICATORS =====
-    - close                    # Close price (primary feature)
-    # Removed: returns (redundant with log_returns), open/high/low (use close + high_low_ratio)
-    # - returns_5                # 5-period % return
-    # - log_returns              # Log return (stationary)
-    # # Removed: volatility_5 (redundant with volatility_20)
-    # - volatility_20            # Rolling volatility (20-period)
-    # - momentum_5               # Price momentum (5-period)
-    # - momentum_10              # Price momentum (10-period)
-    # - volume_ma_5              # Volume moving average (5-period)
-    # - volume_ma_10             # Volume moving average (10-period)
-    # - volume_ratio             # Volume strength
-    # - high_low_ratio           # Daily price range ratio
-    # - bb_upper_20              # Bollinger Band upper
-    # - bb_middle_20             # Bollinger Band middle
-    # - bb_lower_20              # Bollinger Band lower
-    # - bb_width                 # Bollinger Band width
-    - volume
-    # - sma_10
-    # Removed: sma_20 (duplicate of bb_middle_20)
-    - sma_50
-    - sma_200
-    # - ema_12                   # Exponential Moving Average (MISSING DATA)
-    # - ema_26                   # Exponential Moving Average (MISSING DATA)
-    # - macd                     # MACD line (MISSING DATA)
-    # - macd_signal              # MACD signal line (MISSING DATA)
-    # - macd_hist                # MACD histogram (MISSING DATA)
+    # ===== TICKER FEATURES (will be pivoted to ticker-specific) =====
+    - close                    # Will become: close_IWM, close_QQQ, close_RSP, close_SPY
+    - volume                   # Will become: volume_IWM, volume_QQQ, volume_RSP, volume_SPY
+    - sma_50                   # Will become: sma_50_IWM, sma_50_QQQ, sma_50_RSP, sma_50_SPY
+    - sma_200                  # Will become: sma_200_IWM, sma_200_QQQ, sma_200_RSP, sma_200_SPY
     
-    # ===== GDELT SENTIMENT FEATURES (ENABLED) =====
+    # ===== GDELT SENTIMENT FEATURES (SHARED ACROSS TICKERS) =====
     - weighted_avg_tone        # News sentiment (-10 to +10)
     - weighted_avg_polarity    # Sentiment strength
     - num_articles             # Media attention (log-normalized)
@@ -177,8 +155,9 @@ training:
   # Optimization
   batch_size: 64
   epochs: 100  # Quick run: reduced from 100
-  learning_rate: 0.003
+  learning_rate: 0.0001  # Reduced from 0.003 to prevent gradient instability
   optimizer: 'adam'
+  gradient_clip_norm: 1.0  # Clip gradients to prevent explosion
   
   # Directional loss (for trading alignment)
   use_directional_loss: false # Disable initially (focus on main regression)

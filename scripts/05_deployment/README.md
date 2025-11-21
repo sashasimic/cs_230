@@ -87,29 +87,99 @@ docker push gcr.io/{project-id}/model-trainer
 
 #### `generate_dataset.py` - Create Versioned Datasets
 
-Create reproducible dataset snapshots for training.
+Create reproducible dataset snapshots for training with model-type-specific data loaders.
 
 ```bash
-# Generate v1 dataset
-python scripts/05_deployment/generate_dataset.py --version v1
+# Generate TFT dataset v1
+python scripts/05_deployment/generate_dataset.py --version v1 --model-type tft
+
+# Generate LSTM dataset v1 (when LSTM loader exists)
+python scripts/05_deployment/generate_dataset.py --version v1 --model-type lstm
 
 # Use existing local data (skip regeneration)
-python scripts/05_deployment/generate_dataset.py --version v1 --use-existing
+python scripts/05_deployment/generate_dataset.py --version v1 --model-type tft --use-existing
 
 # Delete old versions
 python scripts/05_deployment/generate_dataset.py --delete-versions v1 v2
 ```
 
+**Model-Type-Specific Data Loaders:**
+The script automatically selects the correct data loader based on `--model-type`:
+- `tft` → `scripts/02_features/tft/tft_data_loader.py` (MultiTickerDataLoader)
+- `lstm` → `scripts/02_features/lstm/lstm_data_loader.py` (LSTMDataLoader)
+- `transformer` → `scripts/02_features/transformer/transformer_data_loader.py` (TransformerDataLoader)
+
 **Output:**
-- **Local:** `data/datasets/v1/` (raw + processed + manifest)
-- **GCS:** `gs://{bucket}/datasets/v1/`
+- **Local:** `data/datasets/{model_type}/{version}/` (raw + processed + manifest)
+- **GCS:** `gs://{bucket}/datasets/{model_type}/{version}/`
 - **Registry:** `datasets_registry.yaml` (tracks all versions)
+
+**Example Structure:**
+```
+data/datasets/
+├── tft/
+│   ├── v1/
+│   │   ├── raw/tft_features.csv
+│   │   ├── processed/X_*.npy
+│   │   └── manifest.yaml
+│   └── v2/
+├── lstm/
+│   └── v1/
+└── transformer/
+    └── v1/
+```
 
 **Why version datasets?**
 - Reproducibility: Same data for all experiments
 - Speed: No need to regenerate for each job
 - Sharing: Multiple jobs can use same dataset
 - Rollback: Easy to revert to previous data
+- Model isolation: Different models can have different feature engineering
+
+#### `delete_dataset.py` - Delete Dataset Versions
+
+Delete dataset versions from all locations (local, GCS, Vertex AI Managed Datasets, and registry).
+
+```bash
+# Delete specific version (with confirmation prompt)
+python scripts/05_deployment/delete_dataset.py --version v3 --model-type tft
+
+# Delete without confirmation
+python scripts/05_deployment/delete_dataset.py --version v3 --model-type tft --yes
+
+# Delete LSTM dataset
+python scripts/05_deployment/delete_dataset.py --version v1 --model-type lstm -y
+```
+
+**What gets deleted:**
+1. **Local disk:** `data/datasets/{model_type}/{version}/`
+2. **GCS:** `gs://{bucket}/datasets/{model_type}/{version}/`
+3. **Managed Dataset:** Vertex AI TabularDataset (e.g., `tft-v3-features-csv`)
+4. **Registry:** Entry in `datasets_registry.yaml`
+
+**Options:**
+- `--version`: Dataset version to delete (e.g., `v1`, `v2`, `v3`)
+- `--model-type`: Model type (default: `tft`)
+- `--yes`, `-y`: Skip confirmation prompt
+
+**Safety:**
+- Prompts for confirmation by default
+- Shows what will be deleted before proceeding
+- Gracefully handles missing files/datasets
+
+**Example output:**
+```
+🗑️  Deleting dataset: tft/v3
+================================================================================
+✅ Deleted local: data/datasets/tft/v3
+☁️  Deleting from GCS: gs://bucket/datasets/tft/v3
+✅ Deleted from GCS
+🗂️  Deleting Managed Dataset: tft-v3-features-csv
+✅ Deleted Managed Dataset
+✅ Removed from registry: tft/v3
+================================================================================
+✅ Deletion complete!
+```
 
 ### Job Submission
 
@@ -118,13 +188,17 @@ python scripts/05_deployment/generate_dataset.py --delete-versions v1 v2
 Submit a single training job to Vertex AI.
 
 ```bash
-# Submit job with dataset v1
-python scripts/05_deployment/submit_job.py --dataset-version v1
+# Submit job with TFT dataset v1
+python scripts/05_deployment/submit_job.py --dataset-version v1 --model-type tft
 
 # Custom job name
 python scripts/05_deployment/submit_job.py \
   --dataset-version v1 \
+  --model-type tft \
   --job-name my-experiment
+
+# Submit LSTM model (when LSTM implementation exists)
+python scripts/05_deployment/submit_job.py --dataset-version v1 --model-type lstm
 ```
 
 **Default configuration:**
@@ -169,8 +243,14 @@ HYPERPARAMETER_GRID = {
 Vertex AI native hyperparameter tuning with intelligent search.
 
 ```bash
-# Run HP tuning (20 trials, 4 parallel)
-python scripts/05_deployment/submit_hp_tuning.py
+# Run HP tuning for TFT model (20 trials, 4 parallel)
+python scripts/05_deployment/submit_hp_tuning.py --dataset-version v1 --model-type tft
+
+# With custom job name
+python scripts/05_deployment/submit_hp_tuning.py \
+  --dataset-version v1 \
+  --model-type tft \
+  --job-name tft-hp-tuning-experiment
 ```
 
 **Features:**
@@ -231,14 +311,14 @@ Generic wrapper called by Vertex AI (works with any model type).
 ### Complete Training Pipeline
 
 ```
-1. Generate dataset
-   python scripts/05_deployment/generate_dataset.py --version v1
+1. Generate dataset (with model type)
+   python scripts/05_deployment/generate_dataset.py --version v1 --model-type tft
    ↓
 2. Upload to GCS
    (automatic in step 1)
    ↓
 3. Submit training job(s)
-   python scripts/05_deployment/submit_job.py --dataset-version v1
+   python scripts/05_deployment/submit_job.py --dataset-version v1 --model-type tft
    ↓
 4. Monitor in Vertex AI Console
    https://console.cloud.google.com/vertex-ai/training/custom-jobs
@@ -250,11 +330,11 @@ Generic wrapper called by Vertex AI (works with any model type).
 ### Hyperparameter Tuning Workflow
 
 ```
-1. Generate dataset (once)
-   python scripts/05_deployment/generate_dataset.py --version v1
+1. Generate dataset (once, with model type)
+   python scripts/05_deployment/generate_dataset.py --version v1 --model-type tft
    ↓
 2. Submit HP tuning job
-   python scripts/05_deployment/submit_hp_tuning.py
+   python scripts/05_deployment/submit_hp_tuning.py --dataset-version v1
    ↓
 3. Wait for completion (~4-8 hours)
    ↓
@@ -265,7 +345,7 @@ Generic wrapper called by Vertex AI (works with any model type).
    Update configs/model_tft_config.yaml
    ↓
 6. Train final model
-   python scripts/05_deployment/submit_job.py --dataset-version v1
+   python scripts/05_deployment/submit_job.py --dataset-version v1 --model-type tft
 ```
 
 ## Monitoring
@@ -295,11 +375,16 @@ https://console.cloud.google.com/storage/browser/{project-id}-models
 ```
 gs://{bucket}/
 ├── datasets/
-│   ├── v1/
-│   │   ├── raw/
-│   │   ├── processed/
-│   │   └── manifest.yaml
-│   └── v2/
+│   ├── tft/                    # Model-type-specific datasets
+│   │   ├── v1/
+│   │   │   ├── raw/
+│   │   │   ├── processed/
+│   │   │   └── manifest.yaml
+│   │   └── v2/
+│   ├── lstm/
+│   │   └── v1/
+│   └── transformer/
+│       └── v1/
 ├── models/
 │   ├── {job-name}/
 │   │   └── tft_best.pt
@@ -417,7 +502,7 @@ training:
 
 1. **Run setup**: `bash scripts/05_deployment/setup_gcp.sh`
 2. **Build image**: Build and push Docker image
-3. **Generate dataset**: Create v1 dataset
-4. **Submit job**: Start your first training job
+3. **Generate dataset**: `python scripts/05_deployment/generate_dataset.py --version v1 --model-type tft`
+4. **Submit job**: `python scripts/05_deployment/submit_job.py --dataset-version v1 --model-type tft`
 5. **Monitor**: Watch progress in Vertex AI Console
 6. **Iterate**: Use HP tuning to find best hyperparameters
