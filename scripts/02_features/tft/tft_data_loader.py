@@ -300,7 +300,7 @@ class MultiTickerDataLoader:
                 continue
             
             # Forward fill with limit
-            df[col] = df[col].fillna(method='ffill', limit=self.forward_fill_max_limit)
+            df[col] = df[col].ffill(limit=self.forward_fill_max_limit)
             
             # Count missing after
             missing_after = df[col].isnull().sum()
@@ -410,7 +410,7 @@ class MultiTickerDataLoader:
             if still_missing.any():
                 still_missing_cols = still_missing[still_missing > 0].index.tolist()
                 print(f"\n🔙 Backward filling {len(still_missing_cols)} column(s) for initial NaNs...")
-                df = df.fillna(method='bfill')
+                df = df.bfill()
                 print(f"✅ Backward fill complete")
         
         return df
@@ -975,12 +975,14 @@ class MultiTickerDataLoader:
         """Normalize train/val/test splits. Fit ONLY on training data."""
         from sklearn.preprocessing import StandardScaler
         
-        # Get feature indices that should be normalized
-        time_varying_known = self.config['model'].get('time_varying_known', [])
-        time_varying_unknown = self.config['model']['time_varying_unknown']
-        all_features = list(time_varying_known) + list(time_varying_unknown)
+        # CRITICAL: Use final_features (after pivoting) instead of config!
+        # After pivoting, features like 'close' become 'close_SPY', 'close_QQQ', etc.
+        if not hasattr(self, 'final_features'):
+            raise ValueError("final_features not set! create_sequences() must be called first.")
         
-        # Time features should NOT be normalized
+        all_features = self.final_features
+        
+        # Time features should NOT be normalized (already in good ranges: -1 to 1)
         time_features_to_skip = ['hour_sin', 'hour_cos', 'day_sin', 'day_cos', 
                                   'month_sin', 'month_cos', 'is_weekend']
         
@@ -990,8 +992,12 @@ class MultiTickerDataLoader:
             if feat not in time_features_to_skip:
                 features_to_normalize.append(i)
         
+        skipped_features = [f for f in all_features if f in time_features_to_skip]
         print(f"  Normalizing {len(features_to_normalize)}/{len(all_features)} features")
-        print(f"  Skipping: {', '.join([f for f in all_features if f in time_features_to_skip])}")
+        if skipped_features:
+            print(f"  Skipping: {', '.join(skipped_features)}")
+        else:
+            print(f"  Skipping: (none - all features will be normalized)")
         
         # Normalize each feature across the sequence dimension
         X_train_norm = X_train.copy()
@@ -1033,14 +1039,24 @@ class MultiTickerDataLoader:
             elapsed = time.time() - start_time
             eta = (elapsed / i) * (n_features - i) if i < n_features else 0
             pct = (i / n_features) * 100
-            print(f"    [{i:2d}/{n_features}] {feat_name:<30} mean={scaler.mean_[0]:>8.4f} std={scaler.scale_[0]:>8.4f} ({pct:5.1f}%, ETA: {eta:3.0f}s)")
+            
+            # Shorten feature name if too long (e.g., ticker-specific features)
+            display_name = feat_name if len(feat_name) <= 30 else feat_name[:27] + '...'
+            print(f"    [{i:2d}/{n_features}] {display_name:<30} mean={scaler.mean_[0]:>12.4f} std={scaler.scale_[0]:>12.4f} ({pct:5.1f}%, ETA: {eta:3.0f}s)")
         
         total_time = time.time() - start_time
         print(f"\n  ✅ Normalized {n_features} features in {total_time:.1f}s ({total_time/n_features:.2f}s per feature)")
         
         # Normalize targets (y) - FIT on actual multi-horizon target distribution
         # NOTE: Do NOT use the 1-period 'returns' scaler! Multi-horizon returns have different variance.
-        print(f"  Normalizing targets (y) - fitting scaler on multi-horizon returns...")
+        print(f"\n  Normalizing targets (y) - fitting scaler on multi-horizon returns...")
+        
+        # Show raw statistics BEFORE normalization (diagnostic)
+        print(f"\n  📊 RAW TARGET STATS (before normalization):")
+        print(f"     y_train mean: {y_train.mean():.6f}, std: {y_train.std():.6f}")
+        print(f"     y_train range: [{y_train.min():.6f}, {y_train.max():.6f}]")
+        print(f"     y_val mean: {y_val.mean():.6f}, std: {y_val.std():.6f}")
+        print(f"     y_val range: [{y_val.min():.6f}, {y_val.max():.6f}]")
         
         # Always fit a NEW scaler specifically for targets
         # (Multi-horizon returns have different statistics than 1-period returns)
@@ -1049,8 +1065,8 @@ class MultiTickerDataLoader:
         target_scaler.fit(y_train.reshape(-1, 1))
         self.scalers['target'] = target_scaler  # Store under 'target' key, not self.target_col
         
-        print(f"    Target scaler fitted on {y_train.size} samples")
-        print(f"    Mean: {target_scaler.mean_[0]:.6f}, Std: {target_scaler.scale_[0]:.6f}")
+        print(f"\n  ✅ Target scaler fitted on {y_train.size} samples")
+        print(f"     Scaler mean: {target_scaler.mean_[0]:.6f}, std: {target_scaler.scale_[0]:.6f}")
         
         # Transform targets for all splits (flatten, transform, reshape)
         # y shape: (n_samples, n_horizons) -> flatten -> transform -> reshape back
@@ -1058,8 +1074,11 @@ class MultiTickerDataLoader:
         y_val_norm = target_scaler.transform(y_val.flatten().reshape(-1, 1)).reshape(y_val.shape)
         y_test_norm = target_scaler.transform(y_test.flatten().reshape(-1, 1)).reshape(y_test.shape)
         
-        print(f"    y_train range: [{y_train_norm.min():.3f}, {y_train_norm.max():.3f}]")
-        print(f"    y_val range: [{y_val_norm.min():.3f}, {y_val_norm.max():.3f}]")
+        print(f"\n  📊 NORMALIZED TARGET STATS (after normalization):")
+        print(f"     y_train_norm mean: {y_train_norm.mean():.6f}, std: {y_train_norm.std():.6f}")
+        print(f"     y_train_norm range: [{y_train_norm.min():.3f}, {y_train_norm.max():.3f}]")
+        print(f"     y_val_norm mean: {y_val_norm.mean():.6f}, std: {y_val_norm.std():.6f}")
+        print(f"     y_val_norm range: [{y_val_norm.min():.3f}, {y_val_norm.max():.3f}]")
         
         return X_train_norm, X_val_norm, X_test_norm, y_train_norm, y_val_norm, y_test_norm
 
