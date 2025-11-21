@@ -52,7 +52,7 @@ def print_header(text: str):
     print()
 
 
-def check_completeness(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m') -> Dict:
+def check_completeness(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m', topic_group_id: str = None) -> Dict:
     """Check for missing intervals."""
     print_header("Data Completeness Check")
     
@@ -98,6 +98,7 @@ def check_completeness(client: bigquery.Client, start_date: str, end_date: str, 
       FROM `{PROJECT_ID}.{DATASET_ID}.{GDELT_TABLE}`
       WHERE DATE(timestamp) BETWEEN '{start_date}' AND '{end_date}'
         AND frequency = '{frequency}'
+        {f"AND topic_group_id = '{topic_group_id}'" if topic_group_id else ""}
     )
     SELECT
       COUNT(DISTINCT e.expected_timestamp) as expected_intervals,
@@ -130,7 +131,7 @@ def check_completeness(client: bigquery.Client, start_date: str, end_date: str, 
         return {'complete': False, 'stats': result}
 
 
-def show_missing_intervals(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m', limit: int = 50):
+def show_missing_intervals(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m', topic_group_id: str = None, limit: int = 50):
     """Show which specific intervals are missing."""
     print_header("Missing Intervals Details")
     
@@ -151,6 +152,7 @@ def show_missing_intervals(client: bigquery.Client, start_date: str, end_date: s
       FROM `{PROJECT_ID}.{DATASET_ID}.{GDELT_TABLE}`
       WHERE DATE(timestamp) BETWEEN '{start_date}' AND '{end_date}'
         AND frequency = '{frequency}'
+        {f"AND topic_group_id = '{topic_group_id}'" if topic_group_id else ""}
     )
     SELECT
       e.expected_timestamp as missing_timestamp,
@@ -187,7 +189,7 @@ def show_missing_intervals(client: bigquery.Client, start_date: str, end_date: s
             print(f"  Hour {int(hour):02d}:00 - {count} missing")
 
 
-def check_duplicates(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m') -> Dict:
+def check_duplicates(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m', topic_group_id: str = None) -> Dict:
     """Check for duplicate timestamps."""
     print_header("Duplicate Timestamp Check")
     
@@ -195,11 +197,13 @@ def check_duplicates(client: bigquery.Client, start_date: str, end_date: str, fr
     SELECT
       timestamp,
       frequency,
+      topic_group_id,
       COUNT(*) as count
     FROM `{PROJECT_ID}.{DATASET_ID}.{GDELT_TABLE}`
     WHERE DATE(timestamp) BETWEEN '{start_date}' AND '{end_date}'
       AND frequency = '{frequency}'
-    GROUP BY timestamp, frequency
+      {f"AND topic_group_id = '{topic_group_id}'" if topic_group_id else ""}
+    GROUP BY timestamp, frequency, topic_group_id
     HAVING COUNT(*) > 1
     ORDER BY count DESC, timestamp DESC
     LIMIT 10
@@ -217,7 +221,7 @@ def check_duplicates(client: bigquery.Client, start_date: str, end_date: str, fr
         return {'has_duplicates': True, 'count': len(duplicates), 'samples': duplicates}
 
 
-def validate_sentiment_ranges(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m') -> Dict:
+def validate_sentiment_ranges(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m', topic_group_id: str = None) -> Dict:
     """Validate sentiment values are within expected ranges."""
     print_header("Sentiment Value Validation")
     
@@ -248,6 +252,7 @@ def validate_sentiment_ranges(client: bigquery.Client, start_date: str, end_date
     FROM `{PROJECT_ID}.{DATASET_ID}.{GDELT_TABLE}`
     WHERE DATE(timestamp) BETWEEN '{start_date}' AND '{end_date}'
       AND frequency = '{frequency}'
+      {f"AND topic_group_id = '{topic_group_id}'" if topic_group_id else ""}
     """
     
     result = client.query(query).to_dataframe().iloc[0]
@@ -282,7 +287,7 @@ def validate_sentiment_ranges(client: bigquery.Client, start_date: str, end_date
         return {'valid': False, 'stats': result}
 
 
-def show_extreme_dates(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m'):
+def show_extreme_dates(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m', topic_group_id: str = None):
     """Show 10 most positive and 10 most negative dates."""
     print_header("Extreme Sentiment Dates")
     
@@ -296,6 +301,7 @@ def show_extreme_dates(client: bigquery.Client, start_date: str, end_date: str, 
     FROM `{PROJECT_ID}.{DATASET_ID}.{GDELT_TABLE}`
     WHERE DATE(timestamp) BETWEEN '{start_date}' AND '{end_date}'
       AND frequency = '{frequency}'
+      {f"AND topic_group_id = '{topic_group_id}'" if topic_group_id else ""}
     GROUP BY date
     ORDER BY avg_tone ASC
     LIMIT 10
@@ -311,6 +317,7 @@ def show_extreme_dates(client: bigquery.Client, start_date: str, end_date: str, 
     FROM `{PROJECT_ID}.{DATASET_ID}.{GDELT_TABLE}`
     WHERE DATE(timestamp) BETWEEN '{start_date}' AND '{end_date}'
       AND frequency = '{frequency}'
+      {f"AND topic_group_id = '{topic_group_id}'" if topic_group_id else ""}
     GROUP BY date
     ORDER BY avg_tone DESC
     LIMIT 10
@@ -330,7 +337,7 @@ def show_extreme_dates(client: bigquery.Client, start_date: str, end_date: str, 
         print()
 
 
-def show_random_sample(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m', num_rows: int = 10):
+def show_random_sample(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m', topic_group_id: str = None, num_rows: int = 10):
     """Show random sample rows from the data."""
     print_header("Random Sample Data")
     
@@ -338,6 +345,7 @@ def show_random_sample(client: bigquery.Client, start_date: str, end_date: str, 
     SELECT
       timestamp,
       frequency,
+      topic_group_id,
       weighted_avg_tone,
       weighted_avg_positive,
       weighted_avg_negative,
@@ -349,6 +357,7 @@ def show_random_sample(client: bigquery.Client, start_date: str, end_date: str, 
     FROM `{PROJECT_ID}.{DATASET_ID}.{GDELT_TABLE}`
     WHERE DATE(timestamp) BETWEEN '{start_date}' AND '{end_date}'
       AND frequency = '{frequency}'
+      {f"AND topic_group_id = '{topic_group_id}'" if topic_group_id else ""}
     ORDER BY RAND()
     LIMIT {num_rows}
     """
@@ -368,13 +377,14 @@ def show_random_sample(client: bigquery.Client, start_date: str, end_date: str, 
     print()
 
 
-def show_invalid_records(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m'):
+def show_invalid_records(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m', topic_group_id: str = None):
     """Show records with invalid sentiment values."""
     print_header("Invalid Sentiment Records")
     
     query = f"""
     SELECT
       timestamp,
+      topic_group_id,
       weighted_avg_tone,
       weighted_avg_polarity,
       num_articles,
@@ -382,6 +392,7 @@ def show_invalid_records(client: bigquery.Client, start_date: str, end_date: str
     FROM `{PROJECT_ID}.{DATASET_ID}.{GDELT_TABLE}`
     WHERE DATE(timestamp) BETWEEN '{start_date}' AND '{end_date}'
       AND frequency = '{frequency}'
+      {f"AND topic_group_id = '{topic_group_id}'" if topic_group_id else ""}
       AND (
         weighted_avg_tone < -10 OR weighted_avg_tone > 10
         OR weighted_avg_polarity < 0
@@ -401,13 +412,14 @@ def show_invalid_records(client: bigquery.Client, start_date: str, end_date: str
     print("\n⚠️  These values exceed GDELT's expected range and may indicate data quality issues.")
 
 
-def fetch_sample_data(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m', limit: int = 1000) -> pd.DataFrame:
+def fetch_sample_data(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m', topic_group_id: str = None, limit: int = 1000) -> pd.DataFrame:
     """Fetch sample data for inspection."""
     query = f"""
     SELECT *
     FROM `{PROJECT_ID}.{DATASET_ID}.{GDELT_TABLE}`
     WHERE DATE(timestamp) BETWEEN '{start_date}' AND '{end_date}'
       AND frequency = '{frequency}'
+      {f"AND topic_group_id = '{topic_group_id}'" if topic_group_id else ""}
     ORDER BY timestamp DESC
     LIMIT {limit}
     """
@@ -415,7 +427,7 @@ def fetch_sample_data(client: bigquery.Client, start_date: str, end_date: str, f
     return client.query(query).to_dataframe()
 
 
-def get_summary_stats(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m') -> pd.DataFrame:
+def get_summary_stats(client: bigquery.Client, start_date: str, end_date: str, frequency: str = '15m', topic_group_id: str = None) -> pd.DataFrame:
     """Get daily summary statistics."""
     query = f"""
     SELECT
@@ -430,6 +442,7 @@ def get_summary_stats(client: bigquery.Client, start_date: str, end_date: str, f
     FROM `{PROJECT_ID}.{DATASET_ID}.{GDELT_TABLE}`
     WHERE DATE(timestamp) BETWEEN '{start_date}' AND '{end_date}'
       AND frequency = '{frequency}'
+      {f"AND topic_group_id = '{topic_group_id}'" if topic_group_id else ""}
     GROUP BY date
     ORDER BY date
     """
@@ -488,6 +501,12 @@ def main():
         help='Path to GDELT config file (default: configs/gdelt.yaml)'
     )
     parser.add_argument(
+        '--topic-group',
+        type=str,
+        required=True,
+        help='Topic group to verify (e.g., inflation_prices, fed_policy). Required.'
+    )
+    parser.add_argument(
         '--start',
         '--start-date',
         dest='start_date',
@@ -544,8 +563,22 @@ def main():
         print("   Set it in your .env file")
         sys.exit(1)
     
-    # Load config for default dates
+    # Load config for default dates and topic group validation
     config = load_config(args.config)
+    
+    # Validate topic group
+    topic_group_id = args.topic_group
+    if config and 'topic_groups' in config:
+        if topic_group_id not in config['topic_groups']:
+            available = ', '.join(config['topic_groups'].keys())
+            print(f"❌ Error: Topic group '{topic_group_id}' not found in config")
+            print(f"   Available groups: {available}")
+            sys.exit(1)
+        else:
+            group_config = config['topic_groups'][topic_group_id]
+            description = group_config.get('description', '')
+            print(f"📋 Topic Group: {topic_group_id}")
+            print(f"   Description: {description}")
     
     # Determine dates (CLI args override config)
     start_date = args.start_date
@@ -581,7 +614,7 @@ def main():
     client = bigquery.Client(project=PROJECT_ID)
     
     # Quick data check - show what's in the table
-    print(f"\n🔍 Quick data check for frequency '{args.frequency}':")
+    print(f"\n🔍 Quick data check for frequency '{args.frequency}' and topic group '{topic_group_id}':")
     check_query = f"""
     SELECT 
         COUNT(*) as row_count,
@@ -590,6 +623,7 @@ def main():
         STRING_AGG(DISTINCT frequency ORDER BY frequency) as frequencies
     FROM `{PROJECT_ID}.{DATASET_ID}.{GDELT_TABLE}`
     WHERE frequency = '{args.frequency}'
+      AND topic_group_id = '{topic_group_id}'
       AND DATE(timestamp) BETWEEN '{args.start_date}' AND '{args.end_date}'
     """
     try:
@@ -620,45 +654,46 @@ def main():
     
     print_header("GDELT Sentiment Data Verification")
     print(f"Table: {PROJECT_ID}.{DATASET_ID}.{GDELT_TABLE}")
+    print(f"Topic Group: {topic_group_id}")
     print(f"Date range: {args.start_date} to {args.end_date}")
     print(f"Frequency: {args.frequency}")
     
     # Run checks
-    completeness_result = check_completeness(client, args.start_date, args.end_date, args.frequency)
+    completeness_result = check_completeness(client, args.start_date, args.end_date, args.frequency, topic_group_id)
     
     # Show missing intervals if requested or if there are many missing
     if args.show_missing or (not completeness_result['complete'] and completeness_result['stats']['missing_intervals'] > 0):
-        show_missing_intervals(client, args.start_date, args.end_date, args.frequency)
+        show_missing_intervals(client, args.start_date, args.end_date, args.frequency, topic_group_id)
     
     if args.completeness_only:
         sys.exit(0 if completeness_result['complete'] else 1)
     
-    duplicates_result = check_duplicates(client, args.start_date, args.end_date, args.frequency)
-    validation_result = validate_sentiment_ranges(client, args.start_date, args.end_date, args.frequency)
+    duplicates_result = check_duplicates(client, args.start_date, args.end_date, args.frequency, topic_group_id)
+    validation_result = validate_sentiment_ranges(client, args.start_date, args.end_date, args.frequency, topic_group_id)
     
     # Show invalid records if detected
     if not validation_result['valid']:
-        show_invalid_records(client, args.start_date, args.end_date, args.frequency)
+        show_invalid_records(client, args.start_date, args.end_date, args.frequency, topic_group_id)
     
     # Show extreme dates
-    show_extreme_dates(client, args.start_date, args.end_date, args.frequency)
+    show_extreme_dates(client, args.start_date, args.end_date, args.frequency, topic_group_id)
     
     # Show random sample of data
-    show_random_sample(client, args.start_date, args.end_date, args.frequency, num_rows=10)
+    show_random_sample(client, args.start_date, args.end_date, args.frequency, topic_group_id, num_rows=10)
     
     # Show daily stats if requested
     if args.show_daily_stats:
         print_header("Daily Summary Statistics")
-        stats = get_summary_stats(client, args.start_date, args.end_date, args.frequency)
+        stats = get_summary_stats(client, args.start_date, args.end_date, args.frequency, topic_group_id)
         print(stats.to_string(index=False))
     
     # Export if requested
     if args.export:
         if not args.output:
             os.makedirs('temp', exist_ok=True)
-            args.output = f"temp/gdelt_sentiment_{args.frequency}_{args.start_date}_{args.end_date}.parquet"
+            args.output = f"temp/gdelt_sentiment_{topic_group_id}_{args.frequency}_{args.start_date}_{args.end_date}.parquet"
         
-        sample_df = fetch_sample_data(client, args.start_date, args.end_date, args.frequency)
+        sample_df = fetch_sample_data(client, args.start_date, args.end_date, args.frequency, topic_group_id)
         export_sample_data(sample_df, args.output, args.start_date, args.end_date)
     
     # Final summary

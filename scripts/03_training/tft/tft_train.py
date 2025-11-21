@@ -333,9 +333,6 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     # Load and print actual final features being used
     # Note: Config shows 14 base features, but data has more after pivoting (e.g., close_SPY, close_QQQ)
     try:
-        from pathlib import Path
-        import yaml
-        
         # Load from metadata.yaml (should exist in data/processed/)
         metadata_path = Path('data/processed/metadata.yaml')
         if metadata_path.exists():

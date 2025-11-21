@@ -25,13 +25,14 @@ SYNTHETIC_INDICATORS_TABLE = os.environ.get('BQ_SYNTHETIC_TABLE', 'synthetic_ind
 SYNTHETIC_INDICATORS_STAGING_TABLE = os.environ.get('BQ_SYNTHETIC_STAGING_TABLE', 'synthetic_indicators_staging')
 GDELT_TABLE = os.environ.get('BQ_GDELT_TABLE', 'gdelt_sentiment')
 GDELT_STAGING_TABLE = os.environ.get('BQ_GDELT_STAGING_TABLE', 'gdelt_sentiment_staging')
+GDELT_METADATA_TABLE = os.environ.get('BQ_GDELT_METADATA_TABLE', 'gdelt_query_metadata')
 
 # OHLCV table schema with frequency column
 OHLCV_SCHEMA = [
     bigquery.SchemaField("ticker", "STRING", mode="REQUIRED", description="Ticker symbol (e.g., SPY, SPY)"),
     bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED", description="Exact timestamp of the bar"),
     bigquery.SchemaField("date", "DATE", mode="REQUIRED", description="Date (for partitioning and queries)"),
-    bigquery.SchemaField("frequency", "STRING", mode="REQUIRED", description="Data frequency: daily, hourly, 5m, 15m, etc."),
+    bigquery.SchemaField("frequency", "STRING", mode="REQUIRED", description="Data frequency: daily, hourly, 5m, etc."),
     bigquery.SchemaField("open", "FLOAT64", mode="NULLABLE", description="Opening price"),
     bigquery.SchemaField("high", "FLOAT64", mode="NULLABLE", description="Highest price"),
     bigquery.SchemaField("low", "FLOAT64", mode="NULLABLE", description="Lowest price"),
@@ -118,6 +119,7 @@ GDELT_SCHEMA = [
     bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED", description="15-minute interval timestamp"),
     bigquery.SchemaField("date", "DATE", mode="REQUIRED", description="Date (for partitioning and queries)"),
     bigquery.SchemaField("frequency", "STRING", mode="REQUIRED", description="Data frequency: 15m (GDELT native interval)"),
+    bigquery.SchemaField("topic_group_id", "STRING", mode="REQUIRED", description="Topic group ID (e.g., inflation_prices, fed_policy)"),
     bigquery.SchemaField("weighted_avg_tone", "FLOAT", mode="NULLABLE", description="Sentiment tone (-10 to +10, weighted by word count)"),
     bigquery.SchemaField("weighted_avg_positive", "FLOAT", mode="NULLABLE", description="Positive sentiment score (weighted)"),
     bigquery.SchemaField("weighted_avg_negative", "FLOAT", mode="NULLABLE", description="Negative sentiment score (weighted)"),
@@ -128,6 +130,21 @@ GDELT_SCHEMA = [
     bigquery.SchemaField("min_tone", "FLOAT", mode="NULLABLE", description="Minimum tone in interval (for quality checks)"),
     bigquery.SchemaField("max_tone", "FLOAT", mode="NULLABLE", description="Maximum tone in interval (for quality checks)"),
     bigquery.SchemaField("ingestion_timestamp", "TIMESTAMP", mode="NULLABLE", description="When this data was ingested"),
+]
+
+# GDELT query metadata table schema (tracks data lineage and query configurations)
+GDELT_METADATA_SCHEMA = [
+    bigquery.SchemaField("query_id", "STRING", mode="REQUIRED", description="Unique ID for this query/load"),
+    bigquery.SchemaField("topic_group_id", "STRING", mode="REQUIRED", description="Human-readable topic group ID (e.g., inflation_prices, fed_policy)"),
+    bigquery.SchemaField("load_timestamp", "TIMESTAMP", mode="REQUIRED", description="When this data was loaded"),
+    bigquery.SchemaField("start_date", "DATE", mode="REQUIRED", description="Start date of query range"),
+    bigquery.SchemaField("end_date", "DATE", mode="REQUIRED", description="End date of query range"),
+    bigquery.SchemaField("topics", "STRING", mode="REPEATED", description="List of topics queried"),
+    bigquery.SchemaField("config_file", "STRING", mode="NULLABLE", description="Path to config file used"),
+    bigquery.SchemaField("num_records", "INTEGER", mode="NULLABLE", description="Number of records loaded"),
+    bigquery.SchemaField("num_articles", "INTEGER", mode="NULLABLE", description="Total number of articles processed"),
+    bigquery.SchemaField("frequency", "STRING", mode="NULLABLE", description="Data frequency (15m, 1h, etc.)"),
+    bigquery.SchemaField("notes", "STRING", mode="NULLABLE", description="Optional notes about this load"),
 ]
 
 
@@ -298,14 +315,21 @@ def main():
     # Create GDELT sentiment main table
     print("Creating GDELT sentiment main table...")
     gdelt_table_id = f"{dataset_id}.{GDELT_TABLE}"
-    if not create_table(client, gdelt_table_id, GDELT_SCHEMA, partition_field="date", clustering_fields=["frequency"]):
+    if not create_table(client, gdelt_table_id, GDELT_SCHEMA, partition_field="date", clustering_fields=["topic_group_id", "frequency"]):
         sys.exit(1)
     print()
     
     # Create GDELT sentiment staging table (non-partitioned to avoid quota limits)
     print("Creating GDELT sentiment staging table...")
     gdelt_staging_id = f"{dataset_id}.{GDELT_STAGING_TABLE}"
-    if not create_staging_table(client, gdelt_staging_id, GDELT_SCHEMA, clustering_fields=["frequency"]):
+    if not create_staging_table(client, gdelt_staging_id, GDELT_SCHEMA, clustering_fields=["topic_group_id", "frequency"]):
+        sys.exit(1)
+    print()
+    
+    # Create GDELT query metadata table (tracks data lineage)
+    print("Creating GDELT query metadata table...")
+    gdelt_metadata_id = f"{dataset_id}.{GDELT_METADATA_TABLE}"
+    if not create_table(client, gdelt_metadata_id, GDELT_METADATA_SCHEMA, partition_field="load_timestamp", clustering_fields=["topic_group_id"]):
         sys.exit(1)
     print()
     

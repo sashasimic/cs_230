@@ -57,27 +57,39 @@ Computes synthetic indicators from raw OHLCV data.
 Fetches news sentiment data from Google's public GDELT BigQuery dataset.
 
 ```bash
-# Load using config (daily frequency by default)
-python scripts/01_extract/gdelt_load.py --config configs/gdelt.yaml
-
-# Reload (clear existing data for frequency)
-python scripts/01_extract/gdelt_load.py --config configs/gdelt.yaml --reload
-
-# Load with custom date range and frequency
+# Load using config (requires topic group selection)
 python scripts/01_extract/gdelt_load.py \
-  --start-date 2024-01-01 \
-  --end-date 2024-12-31 \
-  --frequency 1h \
+  --config configs/gdelt.yaml \
+  --topic-group inflation_prices
+
+# Load monetary policy sentiment
+python scripts/01_extract/gdelt_load.py \
+  --config configs/gdelt.yaml \
+  --topic-group monetary_policy
+
+# Reload existing data (clears old data for this topic group + frequency)
+python scripts/01_extract/gdelt_load.py \
+  --config configs/gdelt.yaml \
+  --topic-group inflation_prices \
   --reload
+
+# Load with custom date range
+python scripts/01_extract/gdelt_load.py \
+  --topic-group inflation_prices \
+  --start-date 2024-01-01 \
+  --end-date 2024-12-31
 ```
 
 **Features:**
 - Queries GDELT GKG (Global Knowledge Graph) public dataset
-- Filters by topics (INFLATION, FED, INTEREST_RATE, etc.)
+- **Topic groups**: Organized into `inflation_prices` and `monetary_policy`
+- **US-focused**: Filters for articles mentioning US locations
+- **Required parameter**: `--topic-group` must be specified
 - Aggregates sentiment to configurable frequency (15m, 1h, 4h, 1d, 1w)
 - Weighted sentiment scores by article word count
-- Saves directly to BigQuery (no local parquet)
-- `--reload` flag clears existing data for frequency before loading
+- Saves directly to BigQuery with `topic_group_id` tagging
+- `--reload` flag clears existing data for this topic group + frequency
+- **Duplicate prevention**: Automatically checks for existing data before loading
 
 ### Data Verification
 
@@ -117,30 +129,42 @@ Verifies synthetic indicators.
 Verifies GDELT sentiment data quality and completeness.
 
 ```bash
-# Use dates from config (configs/gdelt.yaml)
-python scripts/01_extract/gdelt_verify.py --frequency 1d
+# Verify inflation prices sentiment (requires topic group)
+python scripts/01_extract/gdelt_verify.py \
+  --config configs/gdelt.yaml \
+  --topic-group inflation_prices \
+  --frequency 1d
+
+# Verify monetary policy sentiment
+python scripts/01_extract/gdelt_verify.py \
+  --config configs/gdelt.yaml \
+  --topic-group monetary_policy \
+  --frequency 1d
 
 # Full verification for specific date range
 python scripts/01_extract/gdelt_verify.py \
+  --topic-group inflation_prices \
   --start 2025-11-01 \
   --end 2025-11-10 \
   --frequency 1d
 
 # Quick completeness check only
 python scripts/01_extract/gdelt_verify.py \
+  --topic-group inflation_prices \
   --frequency 1d \
   --completeness-only
 
-# Show missing intervals
+# Export sample data
 python scripts/01_extract/gdelt_verify.py \
+  --topic-group inflation_prices \
   --frequency 1d \
-  --show-missing
+  --export
 ```
 
 **Checks:**
 - Data completeness (missing intervals)
 - Sentiment value ranges (tone, polarity)
-- Duplicate timestamps
+- Duplicate timestamps (per topic group)
 - Article count statistics
 - Extreme sentiment dates
 
@@ -196,15 +220,33 @@ indicators:
 
 ### GDELT Config (`configs/gdelt.yaml`)
 ```yaml
-topics:
-  # Inflation & prices
-  - INFLATION
-  - DEFLATION
-  - CPI
-  - PCE
-  - CONSUMER_PRICE
-  - PRICE_STABILITY
-  - COST_OF_LIVING
+# Topic Groups - organized by theme
+topic_groups:
+  # INFLATION & PRICES
+  inflation_prices:
+    description: "Inflation, consumer prices, and cost of living"
+    topics:
+      - INFLATION
+      - CONSUMER_PRICE
+      - PRICE_STABILITY
+      - COST_OF_LIVING
+      - FOOD_PRICE
+      - HOUSING_PRICES
+      - NATGASPRICE
+      - FUELPRICES
+      - FOOD_STAPLE
+  
+  # MONETARY POLICY & CENTRAL BANKS
+  monetary_policy:
+    description: "Federal Reserve, interest rates, and monetary policy"
+    topics:
+      - FED
+      - FEDERAL_RESERVE
+      - INTEREST_RATE
+      - MONETARY_POLICY
+      - CENTRAL_BANK
+      - FOMC
+      - JEROME_POWELL
 
 date_range:
   start_date: '2015-11-12'
@@ -311,6 +353,7 @@ CREATE TABLE gdelt_sentiment (
   timestamp TIMESTAMP NOT NULL,
   date DATE NOT NULL,
   frequency STRING NOT NULL,
+  topic_group_id STRING NOT NULL,  -- 'inflation_prices' or 'monetary_policy'
   weighted_avg_tone FLOAT64,
   weighted_avg_positive FLOAT64,
   weighted_avg_negative FLOAT64,
@@ -323,7 +366,7 @@ CREATE TABLE gdelt_sentiment (
   ingestion_timestamp TIMESTAMP
 )
 PARTITION BY date
-CLUSTER BY frequency;
+CLUSTER BY topic_group_id, frequency;
 ```
 
 ## Common Workflows
@@ -368,13 +411,20 @@ python scripts/01_extract/tickers_verify.py \
 
 ### Load GDELT Sentiment Data
 ```bash
-# Load daily sentiment data
-python scripts/01_extract/gdelt_load.py --config configs/gdelt.yaml
+# Load inflation prices sentiment
+python scripts/01_extract/gdelt_load.py \
+  --config configs/gdelt.yaml \
+  --topic-group inflation_prices
+
+# Load monetary policy sentiment
+python scripts/01_extract/gdelt_load.py \
+  --config configs/gdelt.yaml \
+  --topic-group monetary_policy
 
 # Verify data quality
 python scripts/01_extract/gdelt_verify.py \
-  --start 2025-11-01 \
-  --end 2025-11-10 \
+  --config configs/gdelt.yaml \
+  --topic-group inflation_prices \
   --frequency 1d
 ```
 

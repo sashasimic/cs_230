@@ -62,6 +62,14 @@ data:
     enabled: true  # Set to true to include GDELT features
     frequency: '1d'  # Must match what's stored in BigQuery (use '1d' not 'daily')
     
+    # Topic groups to load (references topic_group_id from gdelt.yaml)
+    # You can specify one or multiple topic groups
+    # Examples:
+    #   - Single: ['inflation_prices']
+    #   - Multiple: ['inflation_prices', 'fed_policy', 'commodities']
+    topic_groups:
+      - 'inflation_prices'  # Load only inflation-related sentiment
+    
     # Sentiment features
     features:
       - weighted_avg_tone       # Primary sentiment (-10 to +10)
@@ -78,8 +86,8 @@ data:
   # GENERAL DATA CONFIGURATION
   # ============================================================
   # Date range for training data
-  start_date: '2022-01-01'  # Reduced range to manage memory usage
-  end_date: '2025-05-05'    # Future date for ongoing data collection/test split
+  start_date: '2020-01-01'  # Reduced range to manage memory usage
+  end_date: '2025-11-13'    # Future date for ongoing data collection/test split
   train_ratio: 0.7
   val_ratio: 0.15
   test_ratio: 0.15

@@ -2,65 +2,44 @@
 # Economic Cycle & Inflation Forecasting Framework
 # Mission: Track news sentiment around inflation, Fed policy, and economic themes
 
-# Topics/themes to track from GDELT GKG
-# GDELT uses UPPERCASE with underscores (e.g., FEDERAL_RESERVE)
-topics:
-  # # ========================================
-  # # A. MONETARY POLICY & CENTRAL BANKS
-  # # ========================================
-  # - FED
-  # - FEDERAL_RESERVE
-  # - INTEREST_RATE
-  # - MONETARY_POLICY
-  # - CENTRAL_BANK
-  # - FOMC
-  # - JEROME_POWELL
+# Topic Groups - Multiple groups of related topics
+# Each group has a unique ID and its own list of topics
+# Use --topic-group flag to select which group to load (REQUIRED)
+topic_groups:
+  # ========================================
+  # INFLATION & PRICES
+  # ========================================
+  inflation_prices:
+    description: "Inflation, consumer prices, and cost of living"
+    topics:
+      - INFLATION
+      - CONSUMER_PRICE
+      - PRICE_STABILITY
+      - COST_OF_LIVING
+      - FOOD_PRICE
+      - HOUSING_PRICES
+      - NATGASPRICE
+      - FUELPRICES
+      - FOOD_STAPLE
   
   # ========================================
-  # B. INFLATION & PRICES
+  # MONETARY POLICY & CENTRAL BANKS
   # ========================================
-  - INFLATION
-  - CPI
-  - PCE
-  - CONSUMER_PRICE
-  - PRICE_STABILITY
-  - COST_OF_LIVING
-  - FOOD_PRICE
-  
-  # # ========================================
-  # # C. ECONOMIC INDICATORS
-  # # ========================================
-  # - RECESSION
-  # - ECONOMIC_GROWTH
-  # - GDP
-  # - UNEMPLOYMENT
-  # - JOBS_REPORT
-  # - LABOR_MARKET
-  # - WAGE_GROWTH
-  
-  # # ========================================
-  # # D. FINANCIAL MARKETS
-  # # ========================================
-  # - STOCK_MARKET
-  # - BOND_MARKET
-  # - TREASURY_YIELD
-  # - YIELD_CURVE
-  # - MARKET_VOLATILITY
-  # - VIX
-  
-  # # ========================================
-  # # E. COMMODITIES & ENERGY
-  # # ========================================
-  # - OIL_PRICE
-  # - CRUDE_OIL
-  # - ENERGY_PRICES
-  # - COMMODITY_PRICES
-  # - GOLD_PRICE
+  monetary_policy:
+    description: "Federal Reserve, interest rates, and monetary policy"
+    topics:
+      - FED
+      - FEDERAL_RESERVE
+      - INTEREST_RATE
+      - MONETARY_POLICY
+      - CENTRAL_BANK
+      - FOMC
+      - JEROME_POWELL
 
 # Date range for extraction
 date_range:
-  start_date: '2022-01-01'  # 10 years of data
-  end_date: '2025-05-05'
+  start_date: '2015-11-12'  # 10 years of data
+  end_date: '2025-11-13'
 
 aggregation:
   # Aggregation frequency
@@ -72,11 +51,6 @@ aggregation:
   #   - '1w'   : Weekly aggregation
   frequency: '1d'  # Daily aggregation (matches typical ticker frequency)
   weight_by_word_count: true  # Weight sentiment by article length
-
-# BigQuery configuration
-# NOTE: All BigQuery settings (project_id, dataset_id, table_name) are
-# configured via environment variables in .env (see .env.example)
-# This allows for easier deployment across different environments
 
 # BigQuery configuration
 # NOTE: Project ID and dataset ID are configured via environment variables

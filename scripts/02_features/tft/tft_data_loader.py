@@ -54,6 +54,7 @@ class MultiTickerDataLoader:
         self.use_gdelt = self.config['data']['gdelt'].get('enabled', False)
         if self.use_gdelt:
             self.gdelt_frequency = self.config['data']['gdelt'].get('frequency', self.frequency)  # Use GDELT-specific frequency
+            self.gdelt_topic_groups = self.config['data']['gdelt'].get('topic_groups', ['inflation_prices'])  # Topic groups to load
             self.gdelt_features = self.config['data']['gdelt']['features']
             self.gdelt_normalize_counts = self.config['data']['gdelt'].get('normalize_counts', True)
             self.gdelt_include_lags = self.config['data']['gdelt'].get('include_lags', True)
@@ -120,7 +121,7 @@ class MultiTickerDataLoader:
         return df
     
     def fetch_gdelt_data(self) -> pd.DataFrame:
-        """Fetch GDELT sentiment data from BigQuery."""
+        """Fetch GDELT sentiment data from BigQuery for specified topic groups."""
         if not self.use_gdelt:
             return None
         
@@ -128,22 +129,50 @@ class MultiTickerDataLoader:
         gdelt_table = self.config['bigquery']['gdelt']['table']
         
         print(f"Fetching GDELT sentiment data ({self.gdelt_frequency})...")
+        print(f"  Topic groups: {', '.join(self.gdelt_topic_groups)}")
         
         # Build feature list for SQL
         gdelt_cols = ', '.join([f'g.{col}' for col in self.gdelt_features])
         
+        # Build topic group filter
+        topic_group_list = "', '".join(self.gdelt_topic_groups)
+        
         query = f"""
         SELECT 
             g.timestamp,
+            g.topic_group_id,
             {gdelt_cols}
         FROM `{self.project_id}.{dataset_id}.{gdelt_table}` g
         WHERE g.frequency = '{self.gdelt_frequency}'
+            AND g.topic_group_id IN ('{topic_group_list}')
             AND DATE(g.timestamp) BETWEEN '{self.start_date}' AND '{self.end_date}'
-        ORDER BY g.timestamp
+        ORDER BY g.timestamp, g.topic_group_id
         """
         
         df = self.client.query(query).to_dataframe()
+        
+        if len(df) == 0:
+            print(f"⚠️  Warning: No GDELT data found for topic groups: {', '.join(self.gdelt_topic_groups)}")
+            print(f"   Make sure data is loaded for these topic groups at frequency '{self.gdelt_frequency}'")
+            return None
+        
         print(f"✅ Fetched {len(df):,} GDELT rows")
+        
+        # Show breakdown by topic group
+        for topic_group in self.gdelt_topic_groups:
+            count = len(df[df['topic_group_id'] == topic_group])
+            print(f"   {topic_group}: {count:,} rows")
+        
+        # If multiple topic groups, aggregate them (average sentiment across groups)
+        if len(self.gdelt_topic_groups) > 1:
+            print(f"  Aggregating {len(self.gdelt_topic_groups)} topic groups (averaging sentiment)...")
+            # Group by timestamp and average the sentiment features
+            agg_dict = {col: 'mean' for col in self.gdelt_features}
+            df = df.groupby('timestamp').agg(agg_dict).reset_index()
+            print(f"  ✅ Aggregated to {len(df):,} rows")
+        else:
+            # Single topic group - just drop the topic_group_id column
+            df = df.drop(columns=['topic_group_id'])
         
         return df
     
