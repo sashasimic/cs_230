@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
 """
 Submit single training job to Vertex AI
+
+Usage:
+  # Use named job from vertex.yaml
+  python submit_job.py --job fincast-gpu
+  
+  # Override specific parameters
+  python submit_job.py --job fincast-gpu --dataset-version v4
+  
+  # Specify all parameters manually (legacy mode)
+  python submit_job.py --dataset-version v3 --model-type decoder_transformer --profile gpu-t4
 """
 
 import os
+import yaml
 from pathlib import Path
 from google.cloud import aiplatform
 from datetime import datetime
@@ -18,7 +29,12 @@ if not env_file.exists():
 
 load_dotenv(env_file)
 
-# Configuration from environment
+# Load vertex.yaml config
+vertex_config_path = project_root / 'configs' / 'vertex.yaml'
+with open(vertex_config_path, 'r') as f:
+    VERTEX_CONFIG = yaml.safe_load(f)
+
+# Configuration from environment (with fallbacks to vertex.yaml)
 PROJECT_ID = os.getenv('GCP_PROJECT_ID')
 REGION = os.getenv('GCP_REGION', 'us-central1')
 
@@ -28,8 +44,8 @@ if not PROJECT_ID:
         "Please set it in .env or use: export GCP_PROJECT_ID=your-project-id"
     )
 
-GCS_BUCKET = f"{PROJECT_ID}-models"
-IMAGE_URI = f"gcr.io/{PROJECT_ID}/model-trainer:latest"
+GCS_BUCKET = VERTEX_CONFIG['project'].get('gcs_bucket', f"{PROJECT_ID}-models")
+IMAGE_URI = VERTEX_CONFIG['project'].get('image_uri', f"gcr.io/{PROJECT_ID}/inflation-predictor:latest")
 
 
 def submit_training_job(
@@ -205,44 +221,133 @@ if __name__ == '__main__':
     import argparse
     
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Submit Vertex AI training job')
+    parser = argparse.ArgumentParser(
+        description='Submit Vertex AI training job',
+        epilog='Examples:\n'
+               '  # Use named job from vertex.yaml\n'
+               '  python submit_job.py --job fincast-gpu\n'
+               '\n'
+               '  # Override parameters\n'
+               '  python submit_job.py --job fincast-gpu --dataset-version v4\n'
+               '\n'
+               '  # Manual mode\n'
+               '  python submit_job.py --profile gpu-t4 --model-type decoder_transformer --dataset-version v3\n',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    # Named job (easiest way)
+    parser.add_argument('--job', type=str, default=None,
+                       help='Named job from vertex.yaml (e.g., fincast-gpu, fincast-cpu, test-cpu)')
+    
+    # Individual overrides
+    parser.add_argument('--profile', type=str, default=None,
+                       help='Machine profile (cpu, cpu-large, gpu-t4, gpu-v100, gpu-a100)')
     parser.add_argument('--dataset-version', type=str, default=None,
-                       help='Dataset version to use (e.g., v1, v2). Combined with model-type to form full path.')
-    parser.add_argument('--model-type', type=str, default='tft',
-                       help='Model type (e.g., tft, lstm, transformer). Default: tft')
-    parser.add_argument('--job-name', type=str, default='model-test-run-cpu',
-                       help='Job name')
+                       help='Dataset version to use (e.g., v3, v4)')
+    parser.add_argument('--model-type', type=str, default=None,
+                       help='Model type (e.g., decoder_transformer, tft, lstm)')
+    parser.add_argument('--job-name', type=str, default=None,
+                       help='Custom job name (auto-generated if not provided)')
+    parser.add_argument('--machine-type', type=str, default=None,
+                       help='GCE machine type (overrides profile)')
+    parser.add_argument('--accelerator', type=str, default=None,
+                       help='GPU type (overrides profile)')
+    parser.add_argument('--accelerator-count', type=int, default=None,
+                       help='Number of GPUs (overrides profile)')
+    parser.add_argument('--gcs-bucket', type=str, default=None,
+                       help='GCS bucket name (overrides vertex.yaml)')
     parser.add_argument('--wait', action='store_true',
                        help='Wait and monitor job status (default: exit immediately)')
     args = parser.parse_args()
     
-    # GPU option (commented - quota exceeded, request increase at console.cloud.google.com/iam-admin/quotas)
-    # Training time: ~5-10 hours (vs ~47 hours CPU), Cost: ~$5.40/run
-    # Hyperparameters from best HP tuning trial (trial_1, val_loss=0.670)
-    # job = submit_training_job(
-    #     job_name=args.job_name,
-    #     machine_type='n1-standard-4',        # N1 supports GPUs (~$0.19/hr)
-    #     accelerator_type='NVIDIA_TESLA_T4',   # T4 GPU (~$0.35/hr)
-    #     accelerator_count=1,                  # 1 GPU
-    #     dataset_version=args.dataset_version,
-    #     hidden_size=64,           # Best from HP tuning
-    #     lstm_layers=2,            # Best from HP tuning
-    #     learning_rate=0.001,      # Best from HP tuning
-    #     dropout=0.2,              # Best from HP tuning (was 0.1)
-    #     batch_size=128,           # Best from HP tuning
-    #     lookback_window=192,      # Best from HP tuning (was 100)
-    # )
+    # Build job configuration from vertex.yaml + CLI args
+    job_config = {}
     
-    # CPU-only option - uses values from config file
-    # Training time: ~50-70 hours (3x data vs original), Cost: ~$12-18/run
+    # Start with defaults from vertex.yaml
+    if args.job:
+        # Named job from vertex.yaml
+        if args.job not in VERTEX_CONFIG['jobs']:
+            print(f"\n❌ Unknown job: {args.job}")
+            print(f"\nAvailable jobs:")
+            for job_name, job_def in VERTEX_CONFIG['jobs'].items():
+                profile = VERTEX_CONFIG['profiles'][job_def['profile']]
+                print(f"  • {job_name:20} ({profile['use_case']})")
+            exit(1)
+        
+        # Load named job config
+        named_job = VERTEX_CONFIG['jobs'][args.job]
+        job_config.update(named_job)
+        
+        # Load profile settings
+        profile_name = named_job['profile']
+        profile = VERTEX_CONFIG['profiles'][profile_name]
+        job_config.update({
+            'machine_type': profile['machine_type'],
+            'accelerator_type': profile['accelerator_type'],
+            'accelerator_count': profile['accelerator_count'],
+        })
+        
+        print(f"\n📋 Using named job: {args.job}")
+        print(f"   Profile: {profile_name} (${profile['cost_per_hour']}/hr)")
+        print(f"   Use case: {profile['use_case']}")
+    else:
+        # Manual configuration with defaults from vertex.yaml
+        job_config = {
+            'model_type': args.model_type or VERTEX_CONFIG['defaults']['model_type'],
+            'dataset_version': args.dataset_version or VERTEX_CONFIG['defaults']['dataset_version'],
+            'job_name': args.job_name,
+        }
+        
+        # Use profile if specified
+        if args.profile:
+            if args.profile not in VERTEX_CONFIG['profiles']:
+                print(f"\n❌ Unknown profile: {args.profile}")
+                print(f"\nAvailable profiles:")
+                for prof_name, prof_def in VERTEX_CONFIG['profiles'].items():
+                    print(f"  • {prof_name:15} ${prof_def['cost_per_hour']}/hr - {prof_def['use_case']}")
+                exit(1)
+            
+            profile = VERTEX_CONFIG['profiles'][args.profile]
+            job_config.update({
+                'machine_type': profile['machine_type'],
+                'accelerator_type': profile['accelerator_type'],
+                'accelerator_count': profile['accelerator_count'],
+            })
+            print(f"\n📋 Using profile: {args.profile} (${profile['cost_per_hour']}/hr)")
+        else:
+            # Default to CPU profile
+            profile = VERTEX_CONFIG['profiles']['cpu']
+            job_config.update({
+                'machine_type': profile['machine_type'],
+                'accelerator_type': profile['accelerator_type'],
+                'accelerator_count': profile['accelerator_count'],
+            })
+            print(f"\n📋 Using default profile: cpu")
+    
+    # Override with CLI arguments (highest priority)
+    if args.dataset_version:
+        job_config['dataset_version'] = args.dataset_version
+    if args.model_type:
+        job_config['model_type'] = args.model_type
+    if args.job_name:
+        job_config['job_name'] = args.job_name
+    if args.machine_type:
+        job_config['machine_type'] = args.machine_type
+    if args.accelerator:
+        job_config['accelerator_type'] = args.accelerator
+    if args.accelerator_count is not None:
+        job_config['accelerator_count'] = args.accelerator_count
+    if args.gcs_bucket:
+        GCS_BUCKET = args.gcs_bucket
+    
+    # Submit job with resolved config
     job = submit_training_job(
-        job_name=args.job_name,
-        machine_type='e2-highmem-4',  # E2 high-mem = 32GB RAM (~$0.24/hr)
-        accelerator_type=None,
-        accelerator_count=0,
-        dataset_version=args.dataset_version,
-        model_type=args.model_type,
-        # No hyperparameters - use config file defaults
+        job_name=job_config.get('job_name'),
+        machine_type=job_config['machine_type'],
+        accelerator_type=job_config.get('accelerator_type'),
+        accelerator_count=job_config.get('accelerator_count', 0),
+        dataset_version=job_config.get('dataset_version'),
+        model_type=job_config['model_type'],
     )
     
     # Monitor job if --wait flag is set

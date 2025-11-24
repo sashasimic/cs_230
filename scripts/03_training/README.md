@@ -4,12 +4,51 @@ Scripts for training machine learning models locally and in the cloud.
 
 ## Quick Reference
 
+### FinCast Setup (One-Time)
+
+```bash
+# Complete setup - run once in project root
+git submodule add https://github.com/vincent05r/FinCast-fts.git external/fincast
+git submodule update --init --recursive
+pip install -e external/fincast
+pip install huggingface_hub
+
+# Download pre-trained weights (optional but recommended)
+python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Vincent05R/FinCast', local_dir='external/fincast/checkpoints')"
+```
+
 ### Local Training Commands
 
 **Decoder Transformer:**
 ```bash
+# Standard local training
 python scripts/03_training/decoder_transformer/decoder_transformer_train_local.py \
-  --config configs/model_decoder_config.yaml
+    --config configs/model_decoder_config.yaml
+
+# Custom FinCast configuration:
+python scripts/03_training/decoder_transformer/decoder_transformer_train_local.py \
+    --config configs/model_decoder_config.yaml \
+    --use-fincast \
+    --fincast-d-model 64 \
+    --fincast-layers 3 \
+    --fincast-heads 8
+
+# Progressive unfreezing (fine-tuning):
+python scripts/03_training/decoder_transformer/decoder_transformer_train_local.py \
+    --config configs/model_decoder_config.yaml \
+    --use-fincast \
+    --unfreeze-epoch 50  # Unfreeze top FinCast layer at epoch 50
+
+# With pre-trained FinCast weights:
+python scripts/03_training/decoder_transformer/decoder_transformer_train_local.py \
+    --config configs/model_decoder_config.yaml \
+    --use-fincast \
+    --fincast-weights external/fincast/checkpoints/fincast_model.pt
+
+# Cloud training on Vertex AI
+python scripts/05_deployment/submit_job.py \
+    --dataset-version v2 \
+    --model-type decoder_transformer
 ```
 
 **TFT:**
@@ -209,6 +248,64 @@ tensorboard --logdir logs/tensorboard
 - MAE, RMSE, directional accuracy
 - Gradient norms (unclipped and clipped)
 - Layer-wise gradient statistics (every 10 epochs)
+
+### FinCast Integration (Optional)
+
+#### Overview
+FinCast is a specialized transformer backbone designed for processing individual price series. When enabled, it:
+- Extracts all `close_*` price features from the input
+- Processes each price series through a shared frozen transformer
+- Generates rich representations for each ticker
+- Concatenates these with remaining features (volume, SMAs, GDELT, etc.)
+- Feeds augmented features to the main decoder transformer
+
+#### Architecture
+```
+Input Features (118 dims)
+    ├── Price Features (27 close_* columns)
+    │   └── FinCast Backbone (frozen)
+    │       └── Hidden States (27 × 32 = 864 dims)
+    └── Other Features (91 dims: volume, SMAs, GDELT, time)
+        └── Pass-through
+            ↓
+    Augmented Features (91 + 864 = 955 dims)
+            ↓
+    Decoder Transformer (main model)
+            ↓
+    Multi-horizon Predictions
+```
+
+#### Usage Examples
+
+**Basic FinCast (frozen backbone):**
+```bash
+python scripts/03_training/decoder_transformer/decoder_transformer_train_local.py \
+    --config configs/model_decoder_config.yaml \
+    --use-fincast
+```
+
+#### Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--use-fincast` | False | Enable FinCast backbone |
+| `--fincast-d-model` | 32 | Hidden dimension per price series |
+| `--fincast-layers` | 2 | Number of transformer layers |
+| `--fincast-heads` | 4 | Number of attention heads |
+| `--unfreeze-epoch` | -1 | Epoch to start fine-tuning (-1 = never) |
+
+#### Benefits
+- **Transfer Learning**: Pre-trained on price patterns
+- **Per-Series Processing**: Individual attention to each ticker
+- **Frozen Backbone**: Reduces overfitting, speeds up training
+- **Rich Representations**: 32-864 dims vs 27 raw prices
+- **Optional Fine-tuning**: Progressively unfreeze for task adaptation
+
+#### When to Use
+- Large datasets with many tickers
+- When price patterns are primary signal
+- Transfer learning from pre-trained finance models
+- Multi-asset portfolio prediction tasks
 
 ## TFT Training
 

@@ -79,3 +79,12 @@ decoder_transformer/v2:
   gcs_base_path: gs://inflation-prediction-478715-models/datasets/decoder_transformer/v2/
   raw_dataset_id: projects/233829279510/locations/us-central1/datasets/6541422933418442752
   processed_dataset_id: N/A
+decoder_transformer/v3:
+  version: decoder_transformer/v3
+  model_type: decoder_transformer
+  version_number: v3
+  local_path: data/datasets/decoder_transformer/v3
+  created: '2025-11-24T11:46:08.820234'
+  gcs_base_path: gs://inflation-prediction-478715-models/datasets/decoder_transformer/v3/
+  raw_dataset_id: projects/233829279510/locations/us-central1/datasets/1455838607326576640
+  processed_dataset_id: N/A

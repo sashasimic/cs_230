@@ -249,6 +249,55 @@ def report_metrics_to_vertex(val_loss: float, val_mae: float, dir_acc: float):
         print("\n⚠️  Hypertune not available, skipping metric reporting")
 
 
+def download_fincast_checkpoint(gcs_bucket: str, checkpoint_gcs_path: str = 'models/fincast/v1.pth'):
+    """
+    Download FinCast pre-trained checkpoint from GCS if needed.
+    
+    Args:
+        gcs_bucket: GCS bucket name
+        checkpoint_gcs_path: Path to checkpoint in GCS
+    
+    Returns:
+        Local path to checkpoint
+    """
+    local_path = Path('external/fincast/checkpoints/v1.pth')
+    
+    # Check if checkpoint already exists
+    if local_path.exists():
+        size_mb = local_path.stat().st_size / (1024 * 1024)
+        print(f"✅ FinCast checkpoint already exists ({size_mb:.0f} MB)")
+        return str(local_path)
+    
+    print(f"\n📥 Downloading FinCast checkpoint from GCS...")
+    print(f"   gs://{gcs_bucket}/{checkpoint_gcs_path}")
+    print(f"   → {local_path}")
+    print(f"   Size: ~3.97 GB (may take 2-5 minutes)\n")
+    
+    # Create directory
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Download
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(gcs_bucket)
+    blob = bucket.blob(checkpoint_gcs_path)
+    
+    if not blob.exists():
+        raise FileNotFoundError(
+            f"\n❌ FinCast checkpoint not found in GCS!\n"
+            f"   gs://{gcs_bucket}/{checkpoint_gcs_path}\n\n"
+            f"📤 To upload the checkpoint to GCS, run:\n"
+            f"   gsutil cp external/fincast/checkpoints/v1.pth "
+            f"gs://{gcs_bucket}/{checkpoint_gcs_path}\n"
+        )
+    
+    blob.download_to_filename(str(local_path))
+    
+    size_mb = local_path.stat().st_size / (1024 * 1024)
+    print(f"✅ FinCast checkpoint downloaded ({size_mb:.0f} MB)\n")
+    
+    return str(local_path)
+
+
 def load_from_dataset_version(version, gcs_bucket=None):
     """
     Load a pre-generated dataset version from GCS to local data/ directory.
@@ -394,6 +443,17 @@ def main():
     else:
         # Will generate data from BigQuery during training (current behavior)
         print("\n⚠️  No dataset version provided, will generate from BigQuery...")
+    
+    # Download FinCast checkpoint if needed (check config first)
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    if config.get('fincast', {}).get('enabled', False):
+        print("\n🔧 FinCast enabled in config, downloading checkpoint...")
+        download_fincast_checkpoint(
+            gcs_bucket=args.gcs_bucket,
+            checkpoint_gcs_path='models/fincast/v1.pth'
+        )
     
     # Update config with hyperparameters
     temp_config_path = update_config_with_hyperparameters(args.config, args)

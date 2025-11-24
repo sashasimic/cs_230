@@ -320,6 +320,237 @@ Generic wrapper called by Vertex AI (works with any model type).
 --model_type lstm  # Looks for scripts/03_training/lstm/lstm_train.py
 ```
 
+## FinCast Deployment
+
+### Overview
+
+Deploy decoder transformers with FinCast Foundation Model (FFM) on Vertex AI. FinCast adds 991M pre-trained parameters for enhanced price series processing.
+
+**Key Features:**
+- ✅ **Auto CPU/GPU detection**: Works on both CPU and GPU instances
+- ✅ **Checkpoint management**: Downloads 3.97 GB checkpoint from GCS automatically
+- ✅ **Memory efficient**: Checkpoint excluded from Docker image
+- ✅ **Transfer learning**: Only trains 900K projection parameters, FFM stays frozen
+
+### Prerequisites
+
+1. **FinCast checkpoint uploaded to GCS**:
+   ```bash
+   # Upload checkpoint (one-time, ~3.97 GB)
+   gsutil cp external/fincast/checkpoints/v1.pth \
+       gs://YOUR-PROJECT-ID-models/models/fincast/v1.pth
+   ```
+
+2. **FinCast enabled in config** (`configs/model_decoder_config.yaml`):
+   ```yaml
+   fincast:
+     enabled: true
+     checkpoint_path: 'external/fincast/checkpoints/v1.pth'
+     output_dim: 128
+     freeze_backbone: true
+     lr_scale: 0.2
+   ```
+
+3. **Dataset version created**:
+   ```bash
+   # Create dataset for decoder transformer
+   python scripts/05_deployment/generate_dataset.py \
+       --version v3 \
+       --model-type decoder_transformer
+   ```
+
+### Deployment
+
+#### **CPU Training (Testing)**
+
+```bash
+# Submit CPU job (slower, cheaper, good for testing)
+python scripts/05_deployment/submit_job.py \
+    --dataset-version v3 \
+    --model-type decoder_transformer \
+    --machine-type e2-highmem-8 \
+    --job-name decoder-fincast-cpu-test
+```
+
+**Performance**:
+- **Time per epoch**: 30-60 minutes
+- **Cost**: ~$0.38/hr
+- **Use case**: Quick validation, debugging
+
+#### **GPU Training (Production)**
+
+```bash
+# Submit GPU job (faster, better for production)
+python scripts/05_deployment/submit_job.py \
+    --dataset-version v3 \
+    --model-type decoder_transformer \
+    --machine-type n1-standard-4 \
+    --accelerator NVIDIA_TESLA_T4 \
+    --accelerator-count 1 \
+    --job-name decoder-fincast-gpu
+```
+
+**Performance**:
+- **Time per epoch**: 5-10 minutes (5-10x faster than CPU)
+- **Cost**: ~$0.54/hr (GPU T4)
+- **Use case**: Production training, hyperparameter tuning
+
+### What Happens During Training
+
+1. **Container starts**
+   - FinCast submodule copied to image (code only, no checkpoint)
+   - Dependencies installed from `external/fincast/requirement_v2.txt`
+
+2. **Checkpoint download** (automatic)
+   - Checks if checkpoint exists locally
+   - Downloads from `gs://YOUR-BUCKET/models/fincast/v1.pth` if missing
+   - Takes 2-5 minutes on first run
+   - Cached for subsequent epochs
+
+3. **Model initialization**
+   - Loads 3.97 GB checkpoint from local path
+   - Auto-detects CPU vs GPU:
+     ```python
+     backend="cpu" if not torch.cuda.is_available() else "gpu"
+     ```
+   - Creates projection layer (1280 → 128 dims)
+   - Freezes 991M FFM parameters
+   - Adds LayerNorm for feature stability
+
+4. **Training**
+   - Trains only 900K projection + decoder parameters
+   - Learning rate auto-adjusted (5x lower for FinCast)
+   - Gradient norms stabilized with LayerNorm
+
+### Logs
+
+Expected output:
+```
+🔧 FinCast enabled in config, downloading checkpoint...
+📥 Downloading FinCast checkpoint from GCS...
+   gs://your-bucket/models/fincast/v1.pth
+   → external/fincast/checkpoints/v1.pth
+   Size: ~3.97 GB (may take 2-5 minutes)
+
+✅ FinCast checkpoint downloaded (3979 MB)
+
+🔧 Initializing model with FinCast integration...
+✅ Initializing pre-trained FinCast (FFM) model
+   Architecture: 50 layers, 1280 dims, 16 heads
+   Context length: 512
+   Checkpoint: external/fincast/checkpoints/v1.pth
+   Loading pre-trained weights (3.97 GB, may take 30-60 seconds on CPU)...
+   ✅ Pre-trained FinCast loaded successfully (4.1s)
+   Adding projection: 1280 -> 128 dims
+   🔒 FinCast backbone frozen (no gradients)
+
+🔧 FinCast Integration:
+   Price series: 27
+   FinCast output dim: 128 (projected from 1280)
+   FinCast features: 3456
+   Rest features: 91
+   Total augmented: 3547
+   ⚖️  Added LayerNorm(3547) for feature normalization
+
+🔧 Model Parameters:
+   Total: 992,340,504
+   Trainable: 903,544  ← Only 900K trainable!
+
+ℹ️  Adjusting learning rate for FinCast: 5.00e-05 → 1.00e-05 (0.2x)
+```
+
+### Cost Comparison
+
+| Configuration | Machine | GPU | Time/Epoch | Cost/Epoch | 100 Epochs |
+|--------------|---------|-----|------------|------------|------------|
+| **CPU** | e2-highmem-8 | None | 45 min | $0.28 | $28 |
+| **GPU T4** | n1-standard-4 | T4 | 7 min | $0.06 | $6 |
+| **GPU V100** | n1-standard-4 | V100 | 3 min | $0.12 | $12 |
+
+**Recommendation**: Use GPU T4 for FinCast training (5-10x faster, lower total cost).
+
+### Hyperparameter Tuning with FinCast
+
+```bash
+# Tune FinCast-specific parameters
+python scripts/05_deployment/submit_hp_tuning.py \
+    --dataset-version v3 \
+    --model-type decoder_transformer \
+    --config configs/hp_decoder_fincast.yaml \
+    --max-trials 20 \
+    --parallel-trials 5 \
+    --machine-type n1-standard-4 \
+    --accelerator NVIDIA_TESLA_T4 \
+    --job-name decoder-fincast-hptune
+```
+
+**Tunable parameters** (in config):
+- `fincast.output_dim`: [64, 128, 256]
+- `fincast.lr_scale`: [0.1, 0.2, 0.5]
+- `model.d_model`: [64, 96, 128]
+- `model.n_layers`: [2, 3, 4]
+- `training.learning_rate`: [1e-5, 5e-5, 1e-4]
+
+### Troubleshooting
+
+**Issue: Checkpoint not found**
+```
+❌ FinCast checkpoint not found in GCS!
+   gs://your-bucket/models/fincast/v1.pth
+```
+
+**Fix**: Upload checkpoint to GCS:
+```bash
+gsutil cp external/fincast/checkpoints/v1.pth \
+    gs://YOUR-BUCKET/models/fincast/v1.pth
+```
+
+**Issue: Out of memory on CPU**
+```
+RuntimeError: [enforce fail at alloc_cpu.cpp:...] . DefaultCPUAllocator: can't allocate memory
+```
+
+**Fix**: Use higher-memory machine:
+```bash
+--machine-type e2-highmem-16  # 128 GB RAM
+```
+
+**Issue: CUDA out of memory**
+```
+RuntimeError: CUDA out of memory. Tried to allocate 3.97 GB...
+```
+
+**Fix**: Reduce batch size in config:
+```yaml
+training:
+  batch_size: 32  # or 16
+```
+
+**Issue: Gradients exploding**
+```
+Grad Norm (unclipped): avg=158.6, max=764.4
+```
+
+**Fix**: Already handled by:
+1. LayerNorm after feature augmentation ✅
+2. Lower learning rate (`lr_scale: 0.2`) ✅
+3. Gradient clipping (`gradient_clip_norm: 1.0`) ✅
+
+If still seeing high gradients, reduce `lr_scale` further:
+```yaml
+fincast:
+  lr_scale: 0.1  # Even lower
+```
+
+### Best Practices
+
+1. **Always test locally first** before deploying to Vertex AI
+2. **Use GPU for production** - Total cost is lower despite higher $/hr
+3. **Monitor first epoch carefully** - Should stabilize within 2-3 epochs
+4. **Check gradient norms** - Should be avg < 10, max < 50
+5. **Version your datasets** - FinCast requires specific feature engineering
+6. **Cache checkpoint** - First epoch downloads checkpoint, subsequent runs reuse it
+
 ## Workflow
 
 ### Complete Training Pipeline

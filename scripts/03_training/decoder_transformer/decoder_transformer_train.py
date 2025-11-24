@@ -13,11 +13,13 @@ Shared training function used by both:
 import os
 import sys
 import yaml
+import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import math
+import importlib.util
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict
@@ -53,6 +55,10 @@ class PositionalEncoding(nn.Module):
             x with positional encoding added
         """
         return x + self.pe[:, :x.size(1), :]
+
+
+# FinCast imports are handled in fincast_extension.py
+# No fallback imports needed here
 
 
 class DecoderOnlyTransformerAR(nn.Module):
@@ -318,6 +324,38 @@ class DecoderOnlyTransformerAR(nn.Module):
                 nn.init.zeros_(param)
 
 
+# FinCast integration - all import logic is in fincast_extension.py
+# That module handles:
+#   - Checking if FinCast submodule exists
+#   - Importing FFM and dependencies
+#   - Providing helpful error messages if missing
+#   - Exporting FINCAST_AVAILABLE flag
+
+FINCAST_AVAILABLE = False
+DecoderTransformerWithFinCast = None
+
+try:
+    # Try relative import first (for package context)
+    from .fincast_extension import (
+        DecoderTransformerWithFinCast,
+        FINCAST_AVAILABLE
+    )
+except ImportError:
+    # Try absolute import (for direct script execution)
+    try:
+        import importlib.util
+        fincast_ext_path = Path(__file__).parent / "fincast_extension.py"
+        spec = importlib.util.spec_from_file_location("fincast_extension", fincast_ext_path)
+        if spec and spec.loader:
+            fincast_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(fincast_module)
+            DecoderTransformerWithFinCast = fincast_module.DecoderTransformerWithFinCast
+            FINCAST_AVAILABLE = fincast_module.FINCAST_AVAILABLE
+    except Exception as e:
+        # If both imports fail, FinCast is not available
+        pass
+
+
 def compute_grad_norm(model: nn.Module) -> float:
     """Compute total gradient norm across all model parameters."""
     total_norm = 0.0
@@ -373,6 +411,9 @@ def train_epoch(model, train_loader, optimizer, criterion, device, clip_norm=Non
     unclipped_grad_norms = []
     clipped_grad_norms = []
     
+    total_batches = len(train_loader)
+    print(f"\n  Training: 0/{total_batches} batches", end='', flush=True)
+    
     for batch_idx, (X_batch, y_batch) in enumerate(train_loader):
         X_batch = X_batch.to(device)
         y_batch = y_batch.to(device)
@@ -399,7 +440,12 @@ def train_epoch(model, train_loader, optimizer, criterion, device, clip_norm=Non
         
         optimizer.step()
         total_loss += loss.item()
+        
+        # Progress update every 10 batches or at end
+        if (batch_idx + 1) % 10 == 0 or (batch_idx + 1) == total_batches:
+            print(f"\r  Training: {batch_idx + 1}/{total_batches} batches (loss: {total_loss / (batch_idx + 1):.4f})", end='', flush=True)
     
+    print()  # New line after progress
     avg_loss = total_loss / len(train_loader)
     
     # Unclipped stats
@@ -430,8 +476,11 @@ def evaluate(model, val_loader, criterion, device, use_teacher_forcing=True, log
         mode = "🎯 Teacher Forcing" if use_teacher_forcing else "🔄 Pure Autoregressive"
         print(f"   Eval mode: {mode}")
     
+    total_batches = len(val_loader)
+    print(f"  Validation: 0/{total_batches} batches", end='', flush=True)
+    
     with torch.no_grad():
-        for X_batch, y_batch in val_loader:
+        for batch_idx, (X_batch, y_batch) in enumerate(val_loader):
             X_batch = X_batch.to(device)
             y_batch = y_batch.to(device)
             
@@ -462,7 +511,11 @@ def evaluate(model, val_loader, criterion, device, use_teacher_forcing=True, log
     return avg_loss, mae, rmse, dir_acc
 
 
-def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optional[Dict] = None):
+def train(
+    config_path: str,
+    dataloaders: Optional[Dict] = None,
+    scalers: Optional[Dict] = None
+):
     """
     Core decoder transformer training function.
     
@@ -470,6 +523,9 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
         config_path: Path to model config YAML
         dataloaders: Optional pre-loaded DataLoaders (if None, will load from data/processed/)
         scalers: Optional pre-loaded scalers
+        
+    Note:
+        FinCast configuration is now read from the config YAML file under the 'fincast' section.
     """
     # Load config
     with open(config_path, 'r') as f:
@@ -630,8 +686,42 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     print(f"  Weight decay: {config['training'].get('weight_decay', 0.0)}")
     print(f"  Gradient clip: {config['training'].get('gradient_clip_norm', None)}")
     
-    # Initialize model
-    model = DecoderOnlyTransformerAR(config, num_features=num_features).to(device)
+    # Read FinCast config from YAML
+    fincast_config = config.get('fincast', {})
+    use_fincast = fincast_config.get('enabled', False)
+    
+    # Initialize model (with or without FinCast)
+    if use_fincast:
+        if not FINCAST_AVAILABLE or DecoderTransformerWithFinCast is None:
+            raise ImportError(
+                "FinCast is enabled in config but not available.\n"
+                "Please ensure the FinCast submodule is properly installed.\n"
+                "See scripts/03_training/README.md for setup instructions."
+            )
+        
+        print(f"\n🔧 Initializing model with FinCast integration...")
+        
+        # Build model config from YAML settings
+        model_fincast_config = {
+            'd_model': fincast_config.get('d_model', 1280),
+            'n_heads': fincast_config.get('n_heads', 16),
+            'n_layers': fincast_config.get('n_layers', 50),
+            'd_ff': fincast_config.get('d_ff', 5120),
+            'dropout': fincast_config.get('dropout', 0.1),
+            'freeze': fincast_config.get('freeze_backbone', True),
+            'pretrained_path': fincast_config.get('checkpoint_path'),
+            'output_dim': fincast_config.get('output_dim', 128)
+        }
+        
+        model = DecoderTransformerWithFinCast(
+            config=config,
+            num_features=num_features,
+            fincast_config=model_fincast_config,
+            decoder_transformer_class=DecoderOnlyTransformerAR
+        ).to(device)
+    else:
+        print(f"\n🔧 Initializing standard decoder transformer...")
+        model = DecoderOnlyTransformerAR(config, num_features).to(device)
     
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
@@ -680,9 +770,20 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     
     # Loss and optimizer
     criterion = nn.MSELoss()
+    
+    # Adjust learning rate for FinCast runs (larger input dimension: 118 -> 3547 features)
+    base_lr = config['training']['learning_rate']
+    if use_fincast:
+        # Scale LR to handle much larger feature space and prevent gradient explosion
+        lr_scale = fincast_config.get('lr_scale', 0.2)
+        actual_lr = base_lr * lr_scale
+        print(f"\nℹ️  Adjusting learning rate for FinCast: {base_lr:.2e} → {actual_lr:.2e} ({lr_scale}x)")
+    else:
+        actual_lr = base_lr
+    
     optimizer = optim.Adam(
         model.parameters(),
-        lr=config['training']['learning_rate'],
+        lr=actual_lr,
         weight_decay=config['training'].get('weight_decay', 0.0)
     )
     
@@ -704,7 +805,20 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     print(f"   Evaluation mode: {eval_mode}")
     print("\n" + "="*80)
     
+    # Estimate training time
+    if use_fincast:
+        print("\n⏱️  Estimated time per epoch (with FinCast on CPU): 30-60 minutes")
+        print(f"   Total estimated time for {epochs} epochs: {epochs * 0.75:.1f} hours")
+    else:
+        print(f"\n⏱️  Estimated time per epoch: 5-10 minutes")
+        print(f"   Total estimated time for {epochs} epochs: {epochs * 0.125:.1f} hours")
+    print(f"   Training on {len(train_loader)} batches per epoch\n")
+    
+    training_start_time = time.time()
+    
     for epoch in range(epochs):
+        epoch_start_time = time.time()
+        
         train_loss, avg_unclipped, max_unclipped, avg_clipped, max_clipped = train_epoch(
             model, train_loader, optimizer, criterion, device, clip_norm
         )
@@ -715,7 +829,10 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
             log_mode=(epoch == 0)  # Log mode only on first epoch
         )
         
-        print(f"Epoch {epoch+1}/{epochs}")
+        epoch_time = time.time() - epoch_start_time
+        total_elapsed = time.time() - training_start_time
+        
+        print(f"\nEpoch {epoch+1}/{epochs} - {epoch_time/60:.1f} min (total: {total_elapsed/60:.1f} min)")
         print(f"  Train Loss: {train_loss:.6f}")
         print(f"  Val   Loss: {val_loss:.6f}, MAE: {mae:.6f}, RMSE: {rmse:.6f}")
         print(f"  Dir Acc (H1): {dir_acc * 100:.2f}%")

@@ -33,6 +33,9 @@ models/**/*.onnx
 *.ckpt
 *.safetensors
 
+# FinCast checkpoints (3.97 GB - will be downloaded from GCS)
+external/fincast/checkpoints/
+
 # Python cache and build artifacts
 __pycache__/
 *.py[cod]

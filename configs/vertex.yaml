@@ -1,0 +1,98 @@
+# Vertex AI Deployment Configuration
+# Centralized config for GCS training jobs
+
+# Project settings (can be overridden by .env)
+project:
+  # GCP_PROJECT_ID from .env is preferred
+  # region: us-central1  # GCP_REGION from .env is preferred
+  gcs_bucket: inflation-prediction-478715-models
+  image_uri: gcr.io/inflation-prediction-478715/inflation-predictor:latest
+
+# Default job configuration
+defaults:
+  model_type: decoder_transformer
+  dataset_version: v3
+  use_spot: false  # Spot instances (60-90% discount, but can be preempted)
+  enable_tensorboard: true
+
+# Machine profiles for different use cases
+profiles:
+  # CPU-only training (cheap, slow, good for testing)
+  cpu:
+    machine_type: e2-highmem-8
+    accelerator_type: null
+    accelerator_count: 0
+    cost_per_hour: 0.38
+    use_case: "Testing, debugging, small models"
+  
+  # CPU with more memory (for FinCast on CPU)
+  cpu-large:
+    machine_type: e2-highmem-16
+    accelerator_type: null
+    accelerator_count: 0
+    cost_per_hour: 0.76
+    use_case: "FinCast on CPU, large models"
+  
+  # GPU T4 (recommended for production)
+  gpu-t4:
+    machine_type: n1-standard-4
+    accelerator_type: NVIDIA_TESLA_T4
+    accelerator_count: 1
+    cost_per_hour: 0.54
+    use_case: "Production training, FinCast with GPU (5-10x faster than CPU)"
+  
+  # GPU V100 (for larger models)
+  gpu-v100:
+    machine_type: n1-standard-8
+    accelerator_type: NVIDIA_TESLA_V100
+    accelerator_count: 1
+    cost_per_hour: 2.48
+    use_case: "Large models, faster training (3x faster than T4)"
+  
+  # GPU A100 (for huge models)
+  gpu-a100:
+    machine_type: a2-highgpu-1g
+    accelerator_type: NVIDIA_TESLA_A100
+    accelerator_count: 1
+    cost_per_hour: 3.67
+    use_case: "Huge models, maximum performance (5x faster than T4)"
+
+# Named job configurations for common scenarios
+jobs:
+  # Quick test on CPU
+  test-cpu:
+    profile: cpu
+    job_name: decoder-test-cpu
+    model_type: decoder_transformer
+    dataset_version: v3
+  
+  # FinCast on CPU (testing)
+  fincast-cpu:
+    profile: cpu-large
+    job_name: decoder-fincast-cpu
+    model_type: decoder_transformer
+    dataset_version: v3
+  
+  # FinCast on GPU (production)
+  fincast-gpu:
+    profile: gpu-t4
+    job_name: decoder-fincast-gpu
+    model_type: decoder_transformer
+    dataset_version: v3
+  
+  # Hyperparameter tuning
+  fincast-hptune:
+    profile: gpu-t4
+    job_name: decoder-fincast-hptune
+    model_type: decoder_transformer
+    dataset_version: v3
+    max_trials: 20
+    parallel_trials: 5
+
+# Hyperparameters (optional overrides for specific jobs)
+hyperparameters:
+  # These override values in model_decoder_config.yaml
+  # Leave empty to use config file defaults
+  # learning_rate: 0.0001
+  # batch_size: 64
+  # epochs: 100

@@ -64,7 +64,7 @@ data:
       - sma_50
       - sma_200
   
-  start_date: '2016-05-01'
+  start_date: '2020-05-01'
   end_date: '2025-11-13'
   frequency: 'daily'
   lookback_window: 192    # Standardized naming (matches TFT config)
@@ -103,6 +103,23 @@ data:
     normalize_counts: true  # Normalize article/source counts (log1p transform)
     include_lags: true  # Include lagged sentiment
     lag_periods: [1, 7, 30]  # 1 day, 1 week, 1 month ago
+
+# FinCast Foundation Model Configuration
+fincast:
+  enabled: true                                           # Enable FinCast backbone for price features
+  checkpoint_path: 'external/fincast/checkpoints/v1.pth'  # Path to pre-trained weights (3.97 GB)
+  
+  # FFM Architecture (fixed by pre-trained model - do not change)
+  d_model: 1280          # FFM embedding dimension
+  n_heads: 16            # FFM attention heads
+  n_layers: 50           # FFM transformer layers
+  d_ff: 5120             # FFM feed-forward dimension (4 * d_model)
+  dropout: 0.1           # FFM dropout rate
+  
+  # Projection layer (trainable)
+  output_dim: 128         # Project FinCast embeddings from 1280 -> 128
+  freeze_backbone: true   # Freeze 991M FinCast parameters (only train projection)
+  lr_scale: 0.2           # Learning rate multiplier for FinCast runs (0.2 = 5x lower)
 
 model:
   d_model: 96           # Reduced from 128 (smaller model)
