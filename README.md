@@ -301,12 +301,16 @@ python scripts/03_training/tft/tft_train_local.py --reload
 - TensorBoard logs: `logs/tensorboard/`
 - Training checkpoints: `checkpoints/tft/`
 
-**View Training Progress:**
+**View Training Progress with TensorBoard:**
 ```bash
-# Open TensorBoard
+# Start TensorBoard server
 tensorboard --logdir logs/tensorboard
 
 # Open browser to http://localhost:6006
+
+# View specific model logs
+tensorboard --logdir logs/tensorboard/tft  # TFT model only
+tensorboard --logdir logs/tensorboard/decoder_transformer  # Decoder only
 ```
 
 ### **What You'll See:**
@@ -465,14 +469,58 @@ https://console.cloud.google.com/vertex-ai/training/custom-jobs
 gcloud ai custom-jobs stream-logs JOB_ID --region=us-central1
 ```
 
-### **Step 6: Retrieve Trained Model**
+### **Step 6: Monitor Training with TensorBoard**
+
+#### **View TensorBoard on GCP Console**
+
+```bash
+# Access TensorBoard directly in GCP Console:
+https://console.cloud.google.com/vertex-ai/experiments/tensorboard?project=YOUR_PROJECT_ID
+
+# Or use the link from job submission output:
+# View Tensorboard:
+# https://us-central1.tensorboard.googleusercontent.com/experiment/projects+...
+```
+
+**In the GCP Console:**
+1. Navigate to **Vertex AI > Experiments > TensorBoard**
+2. Find your TensorBoard instance: `tensorboard-YOUR_PROJECT_ID`
+3. Click on the experiment matching your job name (e.g., `model-training-20251119-170000`)
+4. View metrics in real-time:
+   - **Scalars**: Loss, MAE, RMSE, directional accuracy
+   - **Training/Validation**: Separate tabs for train vs. val metrics
+   - **Autoregressive vs. Teacher Forcing**: Compare evaluation modes (decoder_transformer only)
+
+**TensorBoard automatically syncs** from `/tmp/tensorboard/` in the training VM to the managed TensorBoard service.
+
+#### **Download and View TensorBoard Locally**
+
+To view historical TensorBoard logs locally:
+
+```bash
+# Option 1: Download from TensorBoard's managed storage
+# (Logs are stored in a Google-managed GCS bucket)
+# This is automatic - you can access via console URL above
+
+# Option 2: If you manually saved logs to your GCS bucket
+gsutil -m cp -r gs://YOUR_PROJECT_ID-models/tensorboard_logs/ logs/gcp_tensorboard/
+
+# View locally
+tensorboard --logdir logs/gcp_tensorboard/
+
+# Open browser to http://localhost:6006
+```
+
+**Note:** Vertex AI TensorBoard stores logs in a Google-managed storage location. To persist logs in your own GCS bucket, you would need to explicitly copy them in your training script.
+
+### **Step 7: Retrieve Trained Model**
 
 ```bash
 # Download model from GCS
 gsutil cp gs://YOUR_PROJECT_ID-models/models/tft/tft_best.pt models/tft/
 
-# Or download TensorBoard logs
-gsutil -m cp -r gs://YOUR_PROJECT_ID-models/tensorboard_logs/ logs/
+# Download checkpoints
+gsutil -m cp -r gs://YOUR_PROJECT_ID-models/checkpoints/ checkpoints/
 ```
 
 ### **What You'll See in Vertex AI Logs:**
@@ -520,189 +568,6 @@ Epoch 1/100
     LSTM_L0     : norm=0.2345, max=0.6789, std=0.0345
     LSTM_L1     : norm=0.3456, max=0.7890, std=0.0456
     ...
-```
-
----
-
-## 🐛 Troubleshooting
-
-### TensorFlow Installation Issues (macOS)
-
-**Problem:** TensorFlow hangs or "Illegal instruction" error
-
-**Solution:**
-```bash
-pip uninstall tensorflow -y
-pip install tensorflow-macos==2.13.0 tensorflow-metal==1.0.0
-```
-
-
-### Data Not Found Error
-
-**Problem:** `FileNotFoundError: data/raw/train.csv`
-
-**Solution:**
-```bash
-# Either generate data:
-python train.py --generate-dummy
-
-# Or update config.yaml to point to correct path:
-data:
-  local:
-    train_path: 'data/dummy/train.csv'
-```
-
-
-### Out of Memory
-
-**Problem:** Training crashes with OOM error
-
-**Solution:**
-```bash
-# Reduce batch size
-python train.py --batch-size 16
-
-# Or reduce model size in config.yaml:
-model:
-  hidden_dim: 64  # Instead of 128
-  num_layers: 1   # Instead of 2
-```
-
----
-
-## ✨ Project Features
-
-### ✅ Completed Features
-
-- [x] Modular project structure
-- [x] 3 model architectures (MLP, LSTM, Transformer)
-- [x] Flexible data pipeline (local, BigQuery, dummy)
-- [x] Configurable training (YAML + CLI)
-- [x] Early stopping & checkpointing
-- [x] TensorBoard integration
-- [x] Training visualization plots
-- [x] CSV metric logging
-- [x] GCP deployment support
-- [x] Comprehensive logging
-- [x] Reproducible experiments (seeding)
-
-### 🚧 Future Enhancements
-
-- [ ] Hyperparameter tuning (Optuna/Keras Tuner)
-- [ ] Model ensembling
-- [ ] Real-time prediction API
-- [ ] MLflow experiment tracking
-- [ ] Automated testing suite
-- [ ] Data augmentation strategies
-- [ ] Multi-step forecasting
-- [ ] Attention visualization
-
----
-
-## 📚 Additional Resources
-
-### Documentation
-
-- [TensorFlow Documentation](https://www.tensorflow.org/api_docs)
-- [Keras Guide](https://keras.io/guides/)
-- [Google Cloud AI Platform](https://cloud.google.com/ai-platform/docs)
-
-### Notebooks
-
-Explore the `notebooks/` directory for:
-- Data exploration
-- Model comparison
-- Error analysis
-- Hyperparameter tuning experiments
-
----
-
-## 📄 License
-
-This project is for educational purposes (CS230 Deep Learning).
-
----
-
-## 🤝 Contributing
-
-For teammates:
-
-1. Pull latest changes: `git pull`
-2. Create feature branch: `git checkout -b feature/your-feature`
-3. Make changes and test locally
-4. Commit: `git commit -m "Add: your feature"`
-5. Push: `git push origin feature/your-feature`
-6. Create Pull Request
-
----
-
-## 📧 Contact
-
-For questions or issues, please contact the team or open an issue in the repository
-
-### GCP Deployment Workflow
-
-```bash
-# 1. Set GCP project
-export PROJECT_ID=your-gcp-project-id
-export REGION=us-central1
-
-# 2. Run on Vertex AI Custom Job
-gcloud ai custom-jobs create \
-  --region=$REGION \
-  --display-name=cs230-lstm-training \
-  --worker-pool-spec=machine-type=n1-standard-4,replica-count=1,container-image-uri=gcr.io/$PROJECT_ID/cs230-trainer:latest \
-  --args="--model-type=lstm,--epochs=100"
-
-# 4. Monitor job
-gcloud ai custom-jobs list --region=$REGION
-
-# 5. Run on Cloud Run (for API serving)
-gcloud run deploy cs230-predictor \
-  --image gcr.io/$PROJECT_ID/cs230-trainer:latest \
-  --region $REGION \
-  --platform managed
-```
-
----
-
-## ☁️ Google Cloud Integration
-
-### BigQuery Data Source
-
-**Update `configs/config.yaml`:**
-
-```yaml
-data:
-  # BigQuery configuration
-  bigquery:
-    project_id: 'your-gcp-project'
-    
-    # Ticker/market data table
-    ticker_dataset: 'your_dataset'
-    ticker_table: 'ticker_ohlcv'  # Should have: ticker, date, open, high, low, close, volume
-    
-    # GDELT sentiment data table  
-    gdelt_dataset: 'your_dataset'
-    gdelt_table: 'gdelt_daily'    # Should have: date, weighted_avg_tone, num_articles, etc.
-    
-    # Agriculture basket (optional)
-    agriculture_table: 'agriculture_basket'  # Optional: WEAT, SOYB, RJA prices
-  
-  # Date range
-  start_date: '2020-01-01'
-  end_date: '2025-05-05'
-  
-  # Tickers to query
-  tickers: ['SPY', 'QQQ', 'IWM', 'RSP']  # Market index ETFs
-```
-
-### GCS Model Storage
-
-Models are automatically saved to GCS when using BigQuery source:
-
-```
-gs://your-bucket/models/lstm_20241108_221349_final.h5
 ```
 
 ---

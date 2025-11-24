@@ -136,6 +136,57 @@ echo "  ✅ Folder structure ready"
 echo ""
 
 # ============================================================================
+# Configure Default Compute Service Account (for TensorBoard)
+# ============================================================================
+echo "🔧 Configuring default compute service account for TensorBoard..."
+
+# Get project number
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
+COMPUTE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+
+echo "  📋 Project number: $PROJECT_NUMBER"
+echo "  👤 Compute SA: $COMPUTE_SA"
+
+# Grant GCS bucket access (storage.admin includes storage.buckets.get needed by TensorBoard)
+echo "  🔄 Granting GCS bucket access..."
+gsutil iam ch "serviceAccount:${COMPUTE_SA}:roles/storage.admin" "gs://${GCS_BUCKET}" 2>/dev/null
+echo "  ✅ roles/storage.admin on gs://${GCS_BUCKET}"
+
+# Grant Vertex AI access for TensorBoard
+if gcloud projects get-iam-policy "$PROJECT_ID" \
+    --flatten="bindings[].members" \
+    --filter="bindings.role:roles/aiplatform.user AND bindings.members:serviceAccount:$COMPUTE_SA" \
+    --format="value(bindings.role)" 2>/dev/null | grep -q "roles/aiplatform.user"; then
+  echo "  ✅ roles/aiplatform.user (already granted)"
+else
+  echo "  🔄 Granting roles/aiplatform.user..."
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:${COMPUTE_SA}" \
+    --role="roles/aiplatform.user" \
+    --condition=None \
+    --quiet 2>/dev/null
+  echo "  ✅ roles/aiplatform.user (granted)"
+fi
+
+# Grant logging access for TensorBoard events
+if gcloud projects get-iam-policy "$PROJECT_ID" \
+    --flatten="bindings[].members" \
+    --filter="bindings.role:roles/logging.logWriter AND bindings.members:serviceAccount:$COMPUTE_SA" \
+    --format="value(bindings.role)" 2>/dev/null | grep -q "roles/logging.logWriter"; then
+  echo "  ✅ roles/logging.logWriter (already granted)"
+else
+  echo "  🔄 Granting roles/logging.logWriter..."
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:${COMPUTE_SA}" \
+    --role="roles/logging.logWriter" \
+    --condition=None \
+    --quiet 2>/dev/null
+  echo "  ✅ roles/logging.logWriter (granted)"
+fi
+
+echo ""
+
+# ============================================================================
 # Configure Docker
 # ============================================================================
 echo "🐳 Configuring Docker for GCR..."
@@ -157,10 +208,11 @@ echo "✅ Setup complete!"
 echo "="*80
 echo ""
 echo "Configuration:"
-echo "  Project ID:    $PROJECT_ID"
-echo "  Region:        $REGION"
-echo "  GCS Bucket:    gs://$GCS_BUCKET"
-echo "  Service Acct:  $SA_EMAIL"
+echo "  Project ID:      $PROJECT_ID"
+echo "  Region:          $REGION"
+echo "  GCS Bucket:      gs://$GCS_BUCKET"
+echo "  Service Account: $SA_EMAIL"
+echo "  Compute SA:      $COMPUTE_SA (used for TensorBoard)"
 echo ""
 echo "Next steps:"
 echo "  1. Build Docker image:"

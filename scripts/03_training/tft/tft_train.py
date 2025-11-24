@@ -392,29 +392,20 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     if config.get('logging', {}).get('tensorboard', False):
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         
-        # Check if running in Vertex AI
-        in_vertex_ai = os.getenv('CLOUD_ML_JOB_ID') is not None or os.getenv('VERTEX_AI_JOB') is not None
+        # Check for Vertex AI TensorBoard directory (set automatically by Vertex AI)
+        tensorboard_log_dir = os.getenv('AIP_TENSORBOARD_LOG_DIR')
         
-        if in_vertex_ai:
-            # Use GCS path for Vertex AI TensorBoard integration
-            gcs_bucket = os.getenv('GCS_BUCKET', f"{os.getenv('GCP_PROJECT_ID', 'project')}-models")
-            job_name = os.getenv('JOB_NAME', 'training')
-            trial_id = os.getenv('CLOUD_ML_TRIAL_ID')
-            
-            if trial_id:
-                # HP Tuning: tensorboard_logs/{job_name}/trial_{id}/{timestamp}
-                log_dir = f"gs://{gcs_bucket}/tensorboard_logs/{job_name}/trial_{trial_id}/{timestamp}"
-            else:
-                # Single Job: tensorboard_logs/{job_name}/{timestamp}
-                log_dir = f"gs://{gcs_bucket}/tensorboard_logs/{job_name}/{timestamp}"
-            
-            print(f"\n📊 TensorBoard logs → {log_dir}")
-            writer = SummaryWriter(log_dir)
+        if tensorboard_log_dir:
+            # Vertex AI managed TensorBoard - logs auto-sync
+            log_dir = tensorboard_log_dir
+            writer = SummaryWriter(str(log_dir))
+            print(f"\n📊 TensorBoard (Vertex AI): {log_dir}")
+            print(f"   Logs will auto-sync to TensorBoard instance")
         else:
-            # Use local path for local training
+            # Local or manual TensorBoard - use local paths
             log_dir = Path(config.get('logging', {}).get('log_dir', 'logs/tensorboard')) / timestamp
             log_dir.mkdir(parents=True, exist_ok=True)
-            writer = SummaryWriter(log_dir)
+            writer = SummaryWriter(str(log_dir))
             print(f"\n📊 TensorBoard logs → {log_dir}")
             print(f"   View with: tensorboard --logdir {log_dir.parent}")
     
@@ -435,7 +426,8 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     # Setup optimizer and loss
     optimizer = optim.Adam(
         model.parameters(),
-        lr=training_config['learning_rate']
+        lr=training_config['learning_rate'],
+        weight_decay=training_config.get('weight_decay', 0.0)  # L2 regularization
     )
     criterion = nn.MSELoss()
     

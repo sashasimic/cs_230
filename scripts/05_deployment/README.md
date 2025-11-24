@@ -35,7 +35,14 @@ bash scripts/05_deployment/setup_gcp.sh
 - GCS bucket: `gs://{project-id}-models`
 - Service account: `vertex-model-trainer@{project}.iam.gserviceaccount.com`
 - IAM roles: AI Platform, Storage, BigQuery, Logging
+- **TensorBoard permissions:** Configures default compute service account for TensorBoard integration
 - Docker configuration for GCR
+
+**Service Accounts Configured:**
+1. **`vertex-model-trainer@{project}.iam.gserviceaccount.com`** - Custom service account (legacy, not used)
+2. **`{project-number}-compute@developer.gserviceaccount.com`** - Default compute SA with:
+   - `roles/storage.objectAdmin` on GCS bucket (for dataset access)
+   - `roles/aiplatform.user` (for TensorBoard logging)
 
 ### Step 2: Build and Test Docker Image
 
@@ -93,6 +100,9 @@ Create reproducible dataset snapshots for training with model-type-specific data
 # Generate TFT dataset v1
 python scripts/05_deployment/generate_dataset.py --version v1 --model-type tft
 
+# Generate decoder_transformer dataset v1
+python scripts/05_deployment/generate_dataset.py --version v1 --model-type decoder_transformer
+
 # Generate LSTM dataset v1 (when LSTM loader exists)
 python scripts/05_deployment/generate_dataset.py --version v1 --model-type lstm
 
@@ -106,6 +116,7 @@ python scripts/05_deployment/generate_dataset.py --delete-versions v1 v2
 **Model-Type-Specific Data Loaders:**
 The script automatically selects the correct data loader based on `--model-type`:
 - `tft` → `scripts/02_features/tft/tft_data_loader.py` (MultiTickerDataLoader)
+- `decoder_transformer` → `scripts/02_features/decoder_transformer/decoder_transformer_data_loader.py`
 - `lstm` → `scripts/02_features/lstm/lstm_data_loader.py` (LSTMDataLoader)
 - `transformer` → `scripts/02_features/transformer/transformer_data_loader.py` (TransformerDataLoader)
 
@@ -191,10 +202,13 @@ Submit a single training job to Vertex AI.
 # Submit job with TFT dataset v1
 python scripts/05_deployment/submit_job.py --dataset-version v1 --model-type tft
 
+# Submit decoder_transformer job
+python scripts/05_deployment/submit_job.py --dataset-version v1 --model-type decoder_transformer
+
 # Custom job name
 python scripts/05_deployment/submit_job.py \
   --dataset-version v1 \
-  --model-type tft \
+  --model-type decoder_transformer \
   --job-name my-experiment
 
 # Submit LSTM model (when LSTM implementation exists)
@@ -364,6 +378,48 @@ https://console.cloud.google.com/vertex-ai/training/custom-jobs?project={project
 - Metrics (loss, accuracy)
 - Duration and cost
 
+### TensorBoard on Vertex AI
+
+**View TensorBoard experiments:**
+
+1. **Navigate to Vertex AI TensorBoard:**
+   ```
+   https://console.cloud.google.com/vertex-ai/experiments/tensorboard?project={project-id}
+   ```
+
+2. **Find your experiment:**
+   - Logs are organized by job name and timestamp
+   - For decoder_transformer: Look for runs with `_ar` or `_tf` suffix
+   - Path: `gs://{bucket}/tensorboard_logs/{job-name}/{timestamp}`
+
+3. **Compare experiments:**
+   - Select multiple runs to compare
+   - View loss curves, metrics, gradients side-by-side
+   - Filter by tags (e.g., `decoder_ar` vs `decoder_tf`)
+
+**Metrics available:**
+- Loss/train, Loss/val
+- Metrics/MAE, Metrics/RMSE, Metrics/DirectionalAccuracy
+- Gradients/Unclipped_Avg, Gradients/Clipped_Avg
+- LR (learning rate)
+
+**How It Works:**
+- Vertex AI sets `AIP_TENSORBOARD_LOG_DIR` environment variable automatically
+- Training scripts detect this and write TensorBoard logs to the specified directory
+- Logs are auto-synced to the Vertex AI TensorBoard instance in real-time
+- No manual GCS upload needed!
+
+**Permissions Required:**
+- Default compute service account (`{project-number}-compute@developer.gserviceaccount.com`) needs:
+  - `roles/aiplatform.user` - To write to TensorBoard experiments
+  - `roles/storage.objectAdmin` - To access training data from GCS
+- These are automatically configured by `setup_gcp.sh`
+
+**Troubleshooting:**
+- If you see "⚠️ TensorBoard not available" in logs, check service account permissions
+- Training continues without TensorBoard if permissions are missing
+- Look for "📊 TensorBoard (Vertex AI):" message in logs to confirm it's working
+
 ### GCS Bucket
 
 View outputs at:
@@ -381,17 +437,27 @@ gs://{bucket}/
 │   │   │   ├── processed/
 │   │   │   └── manifest.yaml
 │   │   └── v2/
+│   ├── decoder_transformer/
+│   │   └── v1/
 │   ├── lstm/
 │   │   └── v1/
 │   └── transformer/
 │       └── v1/
 ├── models/
 │   ├── {job-name}/
-│   │   └── tft_best.pt
+│   │   ├── tft_best.pt
+│   │   ├── decoder_transformer_best_ar.pt   # Autoregressive eval
+│   │   └── decoder_transformer_best_tf.pt   # Teacher forcing eval
 │   └── {hp-job-name}/
-│       ├── trial_1/tft_best.pt
-│       ├── trial_2/tft_best.pt
+│       ├── trial_1/decoder_transformer_best_ar.pt
+│       ├── trial_2/decoder_transformer_best_ar.pt
 │       └── ...
+├── tensorboard_logs/
+│   ├── {job-name}/
+│   │   └── {timestamp}/   # TensorBoard events
+│   └── {hp-job-name}/
+│       ├── trial_1/{timestamp}/
+│       └── trial_2/{timestamp}/
 └── logs/
 ```
 

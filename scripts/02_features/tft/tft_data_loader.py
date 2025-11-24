@@ -1080,6 +1080,76 @@ class MultiTickerDataLoader:
         print(f"     y_val_norm mean: {y_val_norm.mean():.6f}, std: {y_val_norm.std():.6f}")
         print(f"     y_val_norm range: [{y_val_norm.min():.3f}, {y_val_norm.max():.3f}]")
         
+        # CRITICAL: Check for NaN/Inf after normalization
+        print(f"\n  🔍 DATA QUALITY CHECKS:")
+        
+        try:
+            # Ensure numeric dtype
+            X_train_arr = np.asarray(X_train_norm, dtype=np.float64)
+            X_val_arr = np.asarray(X_val_norm, dtype=np.float64)
+            y_train_arr = np.asarray(y_train_norm, dtype=np.float64)
+            y_val_arr = np.asarray(y_val_norm, dtype=np.float64)
+            
+            # Check X (features)
+            train_nan = np.isnan(X_train_arr).sum()
+            train_inf = np.isinf(X_train_arr).sum()
+            val_nan = np.isnan(X_val_arr).sum()
+            val_inf = np.isinf(X_val_arr).sum()
+            
+            print(f"     X_train: NaN={train_nan:,}, Inf={train_inf:,}")
+            print(f"     X_val:   NaN={val_nan:,}, Inf={val_inf:,}")
+            
+            # Check y (targets)
+            y_train_nan = np.isnan(y_train_arr).sum()
+            y_train_inf = np.isinf(y_train_arr).sum()
+            y_val_nan = np.isnan(y_val_arr).sum()
+            y_val_inf = np.isinf(y_val_arr).sum()
+            
+            print(f"     y_train: NaN={y_train_nan:,}, Inf={y_train_inf:,}")
+            print(f"     y_val:   NaN={y_val_nan:,}, Inf={y_val_inf:,}")
+            
+            # If any NaN/Inf found, identify which features
+            if train_nan > 0 or train_inf > 0:
+                print(f"\n  ⚠️  WARNING: Found NaN/Inf in training data!")
+            nan_features = []
+            inf_features = []
+            for i, feat_name in enumerate(all_features):
+                feat_data = X_train_arr[:, :, i]
+                if np.isnan(feat_data).any():
+                    nan_count = np.isnan(feat_data).sum()
+                    nan_features.append(f"{feat_name} ({nan_count:,} NaN)")
+                if np.isinf(feat_data).any():
+                    inf_count = np.isinf(feat_data).sum()
+                    inf_features.append(f"{feat_name} ({inf_count:,} Inf)")
+            
+            if nan_features:
+                print(f"\n  🔴 Features with NaN:")
+                for feat in nan_features[:10]:  # Show first 10
+                    print(f"     - {feat}")
+                if len(nan_features) > 10:
+                    print(f"     ... and {len(nan_features) - 10} more")
+            
+            if inf_features:
+                print(f"\n  🔴 Features with Inf:")
+                for feat in inf_features[:10]:  # Show first 10
+                    print(f"     - {feat}")
+                if len(inf_features) > 10:
+                    print(f"     ... and {len(inf_features) - 10} more")
+            
+                raise ValueError(
+                    f"Data contains NaN ({train_nan:,}) or Inf ({train_inf:,}) after normalization. "
+                    "This will cause model training to fail. Check the features listed above."
+                )
+            
+            print(f"     ✅ No NaN/Inf detected!")
+            
+        except (TypeError, ValueError) as e:
+            if 'isnan' in str(e) or 'dtype' in str(e):
+                print(f"     ⚠️  Could not validate data types (arrays may have mixed types)")
+                print(f"     Skipping NaN/Inf check - model will fail at runtime if data is bad")
+            else:
+                raise
+        
         return X_train_norm, X_val_norm, X_test_norm, y_train_norm, y_val_norm, y_test_norm
 
 

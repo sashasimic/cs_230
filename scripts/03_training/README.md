@@ -2,6 +2,37 @@
 
 Scripts for training machine learning models locally and in the cloud.
 
+## Quick Reference
+
+### Local Training Commands
+
+**Decoder Transformer:**
+```bash
+python scripts/03_training/decoder_transformer/decoder_transformer_train_local.py \
+  --config configs/model_decoder_config.yaml
+```
+
+**TFT:**
+```bash
+python scripts/03_training/tft/tft_train_local.py
+```
+
+### View TensorBoard
+```bash
+tensorboard --logdir logs/tensorboard
+# Open http://localhost:6006
+```
+
+### Cloud Training
+```bash
+python scripts/05_deployment/submit_job.py \
+  --dataset-version v1 --model-type decoder_transformer
+```
+
+**TensorBoard in Vertex AI logs:** Look for `📊 TensorBoard (Vertex AI):` message after dataset loads.
+
+---
+
 ## Development Workflow (Hybrid Approach)
 
 We use a **hybrid approach** for development and deployment:
@@ -73,11 +104,111 @@ python scripts/05_deployment/submit_job.py --dataset-version v1
 ```
 03_training/
 ├── tft/
-│   ├── tft_train.py         # Core TFT training logic
-│   └── tft_train_local.py   # Local training wrapper
-├── inspect_model.py          # Model inspection utilities
-└── test_architectures.py    # Architecture testing
+│   ├── tft_train.py                    # Core TFT training logic
+│   └── tft_train_local.py              # Local training wrapper
+├── decoder_transformer/
+│   ├── decoder_transformer_train.py     # Core decoder AR transformer logic
+│   └── decoder_transformer_train_local.py  # Local training wrapper
+├── inspect_model.py                     # Model inspection utilities
+└── test_architectures.py               # Architecture testing
 ```
+
+## Decoder Transformer Training
+
+### Overview
+
+Decoder-only autoregressive transformer for time series forecasting with configurable evaluation modes.
+
+**Key Features:**
+- **Autoregressive decoding**: Predicts future values step-by-step
+- **Dual evaluation modes**: Teacher forcing (fast) vs pure autoregressive (realistic)
+- **Model differentiation**: Separate checkpoints for `_ar` and `_tf` variants
+- **TensorBoard logging**: Separate experiments for each mode
+
+### Local Training
+
+#### `decoder_transformer/decoder_transformer_train_local.py` - Local Training Wrapper
+
+```bash
+# Train with default config (uses eval mode from config)
+python scripts/03_training/decoder_transformer/decoder_transformer_train_local.py \
+  --config configs/model_decoder_config.yaml
+
+# Mac compatibility (recommended)
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python scripts/03_training/decoder_transformer/decoder_transformer_train_local.py \
+  --config configs/model_decoder_config.yaml
+```
+
+**Output locations depend on evaluation mode:**
+
+**Autoregressive mode** (`eval_teacher_forcing: false`):
+- Model: `models/decoder_transformer/decoder_transformer_best_ar.pt`
+- TensorBoard: `logs/tensorboard/decoder_ar/`
+
+**Teacher forcing mode** (`eval_teacher_forcing: true`):
+- Model: `models/decoder_transformer/decoder_transformer_best_tf.pt`
+- TensorBoard: `logs/tensorboard/decoder_tf/`
+
+### Evaluation Modes
+
+#### Teacher Forcing (Fast)
+```yaml
+# configs/model_decoder_config.yaml
+training:
+  eval_teacher_forcing: true
+```
+
+**Behavior:**
+- Uses ground truth for next-step inputs during validation
+- Faster evaluation (~2x)
+- Cleaner per-horizon metrics
+- **Use for:** Quick experiments, hyperparameter tuning
+
+#### Pure Autoregressive (Realistic)
+```yaml
+# configs/model_decoder_config.yaml
+training:
+  eval_teacher_forcing: false
+```
+
+**Behavior:**
+- Uses model predictions for next-step inputs
+- Realistic inference simulation
+- Errors compound across horizons
+- **Use for:** Final model evaluation, production readiness
+
+### Model Checkpoints
+
+Each checkpoint includes evaluation mode metadata:
+
+```python
+{
+    'epoch': 53,
+    'model_state_dict': {...},
+    'val_loss': 0.4737,
+    'val_mae': 0.5579,
+    'val_dir_acc': 66.85,
+    'config': {...},
+    'eval_teacher_forcing': False,      # Which mode was used
+    'training_mode': 'autoregressive'   # Human-readable label
+}
+```
+
+### TensorBoard Monitoring
+
+```bash
+# View all experiments (both _ar and _tf)
+tensorboard --logdir logs/tensorboard
+
+# Open browser to http://localhost:6006
+```
+
+**Metrics logged:**
+- Training/validation loss
+- MAE, RMSE, directional accuracy
+- Gradient norms (unclipped and clipped)
+- Layer-wise gradient statistics (every 10 epochs)
 
 ## TFT Training
 

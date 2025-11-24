@@ -78,6 +78,12 @@ def load_data_loader_for_model(model_type: str):
             'module_name': 'tft_data_loader',
             'class_name': 'MultiTickerDataLoader'
         },
+        'decoder_transformer': {
+            # Uses same data format as TFT
+            'path': Path(__file__).parent.parent / '02_features' / 'tft' / 'tft_data_loader.py',
+            'module_name': 'tft_data_loader',
+            'class_name': 'MultiTickerDataLoader'
+        },
         'lstm': {
             'path': Path(__file__).parent.parent / '02_features' / 'lstm' / 'lstm_data_loader.py',
             'module_name': 'lstm_data_loader',
@@ -455,21 +461,38 @@ def create_managed_dataset(version: str, gcs_bucket: str, project: str, region: 
     else:
         print(f"\n🏗️  Creating Managed Dataset (CSV for schema viewing only)...")
         try:
-            raw_dataset = aiplatform.TabularDataset.create(
-                display_name=raw_display_name,
-                gcs_source=f"{gcs_base_path}raw/tft_features.csv",
-                labels={
-                    'model_type': model_type,
-                    'version': version.replace('/', '-').replace('.', '_'),  # Labels can't have dots or slashes
-                    'type': 'schema',
-                    'purpose': 'inspection',
-                    'note': 'training_uses_npy_files'
-                },
-                sync=True
-            )
-            print(f"   ✅ Managed Dataset: {raw_dataset.resource_name}")
-            print(f"   📊 Purpose: View feature schema in Vertex AI Console")
-            print(f"   ⚠️  Note: Training loads .npy files directly, not this CSV")
+            # Find CSV file in raw directory (model-agnostic)
+            from google.cloud import storage
+            client = storage.Client()
+            bucket = client.bucket(gcs_bucket)
+            prefix = f"datasets/{version}/raw/"
+            csv_files = [b for b in bucket.list_blobs(prefix=prefix) if b.name.endswith('.csv')]
+            
+            if not csv_files:
+                print(f"   ⚠️  No CSV files found in {gcs_base_path}raw/")
+                print(f"   Skipping Managed Dataset creation (CSV required for schema viewing)")
+                raw_dataset = None
+            else:
+                # Use the first CSV file found
+                csv_blob = csv_files[0]
+                csv_gcs_path = f"gs://{gcs_bucket}/{csv_blob.name}"
+                print(f"   📄 Using CSV: {csv_blob.name}")
+                
+                raw_dataset = aiplatform.TabularDataset.create(
+                    display_name=raw_display_name,
+                    gcs_source=csv_gcs_path,
+                    labels={
+                        'model_type': model_type,
+                        'version': version.replace('/', '-').replace('.', '_'),  # Labels can't have dots or slashes
+                        'type': 'schema',
+                        'purpose': 'inspection',
+                        'note': 'training_uses_npy_files'
+                    },
+                    sync=True
+                )
+                print(f"   ✅ Managed Dataset: {raw_dataset.resource_name}")
+                print(f"   📊 Purpose: View feature schema in Vertex AI Console")
+                print(f"   ⚠️  Note: Training loads .npy files directly, not this CSV")
         except Exception as e:
             print(f"   ⚠️  Warning: Could not create raw dataset: {e}")
             raw_dataset = None
@@ -652,7 +675,7 @@ def main():
         print(f"⚠️  Warning: .env file not found at {env_file}")
     
     parser = argparse.ArgumentParser(
-        description='Generate TFT dataset for Vertex AI cloud training',
+        description='Generate versioned datasets for Vertex AI cloud training (supports multiple model types)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -679,8 +702,8 @@ Examples:
                        help='Model type for dataset versioning (default: tft)')
     parser.add_argument('--delete-versions', type=str, nargs='+',
                        help='Delete specified dataset versions (e.g., --delete-versions v1 v2)')
-    parser.add_argument('--config', type=str, default='configs/model_tft_config.yaml',
-                       help='Path to model config YAML')
+    parser.add_argument('--config', type=str, default=None,
+                       help='Path to model config YAML (default: auto-select based on --model-type)')
     parser.add_argument('--gcs-bucket', type=str, 
                        default=os.getenv('GCP_PROJECT_ID', 'your-project') + '-models',
                        help='GCS bucket name (default: {GCP_PROJECT_ID}-models)')
@@ -695,6 +718,17 @@ Examples:
                        help='Base directory for dataset storage')
     
     args = parser.parse_args()
+    
+    # Auto-select config file based on model type if not specified
+    if args.config is None:
+        config_map = {
+            'tft': 'configs/model_tft_config.yaml',
+            'decoder_transformer': 'configs/model_decoder_config.yaml',
+            'lstm': 'configs/model_lstm_config.yaml',
+            'transformer': 'configs/model_transformer_config.yaml'
+        }
+        args.config = config_map.get(args.model_type, 'configs/model_tft_config.yaml')
+        print(f"\n📋 Auto-selected config: {args.config} (for model type: {args.model_type})")
     
     # Handle deletion mode
     if args.delete_versions:

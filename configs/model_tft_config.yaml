@@ -8,6 +8,7 @@ data:
   # ============================================================
   tickers:
     # List of ticker symbols to include (all will use same frequency and features)
+    # NOTE: All tickers below are available in BigQuery (see configs/tickers.yaml)
     symbols:
     # ========================================
     # A. EQUITY MARKET INDICES
@@ -17,6 +18,61 @@ data:
     - QQQ      # Nasdaq 100 - Inflation-sensitive via discount rate (growth stocks)
     - IWM      # Russell 2000 - Domestic demand & wage inflation proxy
     - RSP      # Equal-Weight S&P 500 - Market breadth, narrows during inflation uncertainty
+    
+    # ========================================
+    # B. SECTOR ETFs (Sector Rotation)
+    # ========================================
+    # Different sectors lead in different economic phases
+    - XLF      # Financials - Credit creation, early expansion leader
+    - XLI      # Industrials - Early cyclical recovery
+    - XLY      # Consumer Discretionary - Demand recovery signal
+    - XLK      # Technology - Growth phase, rate-sensitive
+    - XLE      # Energy - Direct inflation transmission via oil prices
+    - XLB      # Materials - Cost-push inflation signal
+    - XLP      # Consumer Staples - Inflation resilience, pricing power
+    - XLV      # Health Care - Defensive, late-cycle outperformer
+    - XLU      # Utilities - Inflation-sensitive through rate costs
+    - XLRE     # Real Estate - Inflation hedge but rate-sensitive
+    
+    # ========================================
+    # C. FIXED INCOME (Interest Rate Environment)
+    # ========================================
+    # Treasury yields embed purest inflation expectations
+    - TLT      # 20+ Year Treasury - Long-term inflation expectations
+    - IEF      # 7-10 Year Treasury - Nominal growth & inflation outlook
+    - TIP      # TIPS - Explicit inflation breakeven measure
+    - SHY      # 1-3 Year Treasury - Short-term rates
+    
+    # ========================================
+    # D. CREDIT MARKETS (Credit Cycle)
+    # ========================================
+    # Credit risk rises when inflation erodes margins
+    - LQD      # Investment Grade Corporate Bonds
+    - HYG      # High Yield Bonds - Inflation-driven rate hike sensitivity
+    
+    # ========================================
+    # E. COMMODITIES (Inflation Drivers)
+    # ========================================
+    # Core inflation drivers, rise early in expansions
+    - DBC      # Broad Commodities Index - Core inflation driver
+    - USO      # Crude Oil - Energy cost inflation
+    - GLD      # Gold - Inflation hedge, policy distrust indicator
+    - CPER     # Copper - Industrial demand proxy
+    
+    # ========================================
+    # F. AGRICULTURE (Target & Feature)
+    # ========================================
+    # Food inflation proxies - both predictors and prediction targets
+    - DBA      # Agriculture ETF - Broad agricultural commodity basket
+    - WEAT     # Wheat ETF - Staple grain, global food supply
+    - SOYB     # Soybean ETF - Protein source, livestock feed
+    # RJA removed: 55% missing data (625/1393 days) causes NaN after normalization
+    
+    # ========================================
+    # G. CURRENCY (Dollar & Inflation Transmission)
+    # ========================================
+    # Dollar acts as global inflation valve
+    - UUP      # US Dollar Index - Strong USD → imported disinflation
     
     # Shared frequency for all tickers
     frequency: 'daily'
@@ -86,7 +142,7 @@ data:
   # GENERAL DATA CONFIGURATION
   # ============================================================
   # Date range for training data
-  start_date: '2020-01-01'  # Reduced range to manage memory usage
+  start_date: '2020-05-01'  # Reduced range to manage memory usage
   end_date: '2025-11-13'    # Future date for ongoing data collection/test split
   train_ratio: 0.7
   val_ratio: 0.15
@@ -118,7 +174,7 @@ model:
   hidden_size: 128              # Hidden layer dimension
   lstm_layers: 3               # Number of LSTM layers
   attention_heads: 8           # Multi-head attention
-  dropout: 0.15
+  dropout: 0.2  # Increased from 0.15 to help with overfitting
   
   # Quantile prediction
   quantiles: [0.5]            # Start with median only (reduce to regression task)
@@ -165,6 +221,7 @@ training:
   epochs: 100  # Quick run: reduced from 100
   learning_rate: 0.0001  # Reduced from 0.003 to prevent gradient instability
   optimizer: 'adam'
+  weight_decay: 0.01  # L2 regularization to prevent overfitting
   gradient_clip_norm: 1.0  # Clip gradients to prevent explosion
   
   # Directional loss (for trading alignment)

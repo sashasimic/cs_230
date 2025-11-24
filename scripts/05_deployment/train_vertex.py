@@ -66,14 +66,14 @@ def update_config_with_hyperparameters(config_path: str, args) -> str:
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     
-    # Update model architecture (only if explicitly provided)
-    if args.hidden_size is not None:
+    # Update model architecture (only if explicitly provided and key exists)
+    if args.hidden_size is not None and 'hidden_size' in config.get('model', {}):
         config['model']['hidden_size'] = args.hidden_size
-    if args.lstm_layers is not None:
+    if args.lstm_layers is not None and 'lstm_layers' in config.get('model', {}):
         config['model']['lstm_layers'] = args.lstm_layers
-    if args.attention_heads is not None:
+    if args.attention_heads is not None and 'attention_heads' in config.get('model', {}):
         config['model']['attention_heads'] = args.attention_heads
-    if args.dropout is not None:
+    if args.dropout is not None and 'dropout' in config.get('model', {}):
         config['model']['dropout'] = args.dropout
     
     # Update training settings (only if explicitly provided)
@@ -83,7 +83,7 @@ def update_config_with_hyperparameters(config_path: str, args) -> str:
         config['training']['batch_size'] = args.batch_size
     if args.learning_rate is not None:
         config['training']['learning_rate'] = args.learning_rate
-    if args.early_stopping_patience is not None:
+    if args.early_stopping_patience is not None and 'early_stopping' in config.get('training', {}):
         config['training']['early_stopping']['patience'] = args.early_stopping_patience
     
     # Update data settings ONLY if not using pre-generated dataset
@@ -101,13 +101,26 @@ def update_config_with_hyperparameters(config_path: str, args) -> str:
     print(f"\n" + "="*80)
     print("   Hyperparameters")
     print("="*80)
-    print(f"Hidden size: {config['model']['hidden_size']}")
-    print(f"LSTM layers: {config['model']['lstm_layers']}")
-    print(f"Attention heads: {config['model']['attention_heads']}")
-    print(f"Dropout: {config['model']['dropout']}")
+    # Print model-specific params
+    model_config = config.get('model', {})
+    if 'hidden_size' in model_config:
+        print(f"Hidden size: {model_config['hidden_size']}")
+    if 'lstm_layers' in model_config:
+        print(f"LSTM layers: {model_config['lstm_layers']}")
+    if 'd_model' in model_config:
+        print(f"d_model: {model_config['d_model']}")
+    if 'n_layers' in model_config:
+        print(f"n_layers: {model_config['n_layers']}")
+    if 'attention_heads' in model_config:
+        print(f"Attention heads: {model_config['attention_heads']}")
+    if 'n_heads' in model_config:
+        print(f"n_heads: {model_config['n_heads']}")
+    if 'dropout' in model_config:
+        print(f"Dropout: {model_config['dropout']}")
     print(f"Learning rate: {config['training']['learning_rate']}")
     print(f"Batch size: {config['training']['batch_size']}")
-    print(f"Lookback: {config['data']['lookback_window']}")
+    if 'lookback_window' in config.get('data', {}):
+        print(f"Lookback: {config['data']['lookback_window']}")
     print("="*80 + "\n")
     
     return temp_config_path
@@ -337,6 +350,17 @@ def main():
     """Main training loop for Vertex AI."""
     args = parse_args()
     
+    # Auto-select config based on model_type if using default TFT config
+    if args.config == 'configs/model_tft_config.yaml' and args.model_type != 'tft':
+        config_map = {
+            'decoder_transformer': 'configs/model_decoder_config.yaml',
+            'lstm': 'configs/model_lstm_config.yaml',
+            'transformer': 'configs/model_transformer_config.yaml',
+        }
+        if args.model_type in config_map:
+            args.config = config_map[args.model_type]
+            print(f"📋 Auto-selected config: {args.config}")
+    
     # Set environment variables (needed for BigQuery access and TensorBoard logging)
     # Extract project ID from GCS bucket name (format: {project_id}-*-models)
     # Handle various bucket naming patterns
@@ -398,7 +422,20 @@ def main():
         
         # Load best checkpoint to get metrics
         # Look for model in model_type subdirectory
-        local_model_path = f'models/{args.model_type}/{args.model_type}_best.pt'
+        # For decoder_transformer, check for _ar or _tf variants first
+        local_model_path = None
+        if args.model_type == 'decoder_transformer':
+            # Try autoregressive variant first, then teacher forcing
+            for suffix in ['_ar', '_tf']:
+                candidate = f'models/{args.model_type}/{args.model_type}_best{suffix}.pt'
+                if os.path.exists(candidate):
+                    local_model_path = candidate
+                    break
+        
+        # Fallback to standard naming for other models or if variants not found
+        if local_model_path is None:
+            local_model_path = f'models/{args.model_type}/{args.model_type}_best.pt'
+        
         if os.path.exists(local_model_path):
             # Note: weights_only=False is safe here since we're loading our own checkpoint
             # PyTorch 2.6+ requires this for checkpoints containing numpy objects
@@ -427,6 +464,9 @@ def main():
                 args.gcs_model_path,
                 args.job_name
             )
+            
+            # TensorBoard logs are automatically synced by Vertex AI when using AIP_TENSORBOARD_LOG_DIR
+            # No manual upload needed!
             
             # Report metrics to Vertex AI (for hyperparameter tuning)
             report_metrics_to_vertex(val_loss, val_mae, dir_acc)

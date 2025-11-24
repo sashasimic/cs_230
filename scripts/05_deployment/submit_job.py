@@ -122,14 +122,61 @@ def submit_training_job(
         worker_pool_specs=[worker_pool_spec],
     )
     
+    # Get or create TensorBoard instance
+    tensorboard_resource_name = None
+    try:
+        print(f"\n📊 Setting up TensorBoard...")
+        tensorboards = aiplatform.Tensorboard.list(filter=f'display_name="tensorboard-{PROJECT_ID}"')
+        
+        if tensorboards:
+            tensorboard = tensorboards[0]
+            tensorboard_resource_name = tensorboard.resource_name
+            print(f"   ✅ Using existing TensorBoard: {tensorboard.display_name}")
+            print(f"   Resource: {tensorboard_resource_name}")
+        else:
+            print(f"   Creating new TensorBoard instance...")
+            tensorboard = aiplatform.Tensorboard.create(
+                display_name=f"tensorboard-{PROJECT_ID}",
+                project=PROJECT_ID,
+                location=REGION,
+            )
+            tensorboard_resource_name = tensorboard.resource_name
+            print(f"   ✅ Created: {tensorboard.display_name}")
+            print(f"   Resource: {tensorboard_resource_name}")
+    except Exception as e:
+        print(f"\n⚠️  TensorBoard setup failed: {e}")
+        print(f"   Training will continue without TensorBoard")
+        tensorboard_resource_name = None
+    
     # Submit job
-    # Note: Spot instances not supported via Python SDK worker_pool_specs dict
-    # Use gcloud CLI or REST API directly for spot instance support
     print(f"\n🚀 Submitting job to Vertex AI...")
     if use_spot:
         print(f"   ⚠️  Warning: Spot instances requested but not supported via Python SDK")
         print(f"   Using regular instances (spot requires gcloud CLI or REST API)")
-    job.run(sync=False)
+    
+    # Prepare job run parameters
+    run_params = {'sync': False}
+    
+    # Add TensorBoard and service account if TensorBoard is configured
+    if tensorboard_resource_name:
+        # Get project number for default compute service account
+        # This SA already has necessary GCS and Vertex AI permissions
+        import subprocess
+        result = subprocess.run(
+            ['gcloud', 'projects', 'describe', PROJECT_ID, '--format=value(projectNumber)'],
+            capture_output=True, text=True, check=True
+        )
+        project_number = result.stdout.strip()
+        service_account = f"{project_number}-compute@developer.gserviceaccount.com"
+        
+        run_params['tensorboard'] = tensorboard_resource_name
+        run_params['service_account'] = service_account
+        print(f"   📊 TensorBoard integration: ENABLED")
+        print(f"   Service account: {service_account}")
+    else:
+        print(f"   📊 TensorBoard integration: DISABLED")
+    
+    job.run(**run_params)
     
     # Wait a moment for job to be created
     import time
@@ -165,6 +212,8 @@ if __name__ == '__main__':
                        help='Model type (e.g., tft, lstm, transformer). Default: tft')
     parser.add_argument('--job-name', type=str, default='model-test-run-cpu',
                        help='Job name')
+    parser.add_argument('--wait', action='store_true',
+                       help='Wait and monitor job status (default: exit immediately)')
     args = parser.parse_args()
     
     # GPU option (commented - quota exceeded, request increase at console.cloud.google.com/iam-admin/quotas)
@@ -196,9 +245,22 @@ if __name__ == '__main__':
         # No hyperparameters - use config file defaults
     )
     
+    # Monitor job if --wait flag is set
+    if args.wait:
+        print(f"\n🔍 Monitoring job status...")
+        print(f"   (Press Ctrl+C to stop monitoring, job will continue running)\n")
+        try:
+            job.wait()
+            print(f"\n✅ Job completed successfully!")
+        except KeyboardInterrupt:
+            print(f"\n\n⏸️  Stopped monitoring (job still running in background)")
+    else:
+        print(f"\n🚀 Job submitted in background")
+        print(f"   Use --wait flag to monitor status, or check console")
+    
     # Print final status (handle case where job resource isn't available yet)
     try:
-        print(f"\n🚀 Job running in background: {job.display_name}")
+        print(f"\n📊 Job: {job.display_name}")
     except (RuntimeError, AttributeError) as e:
         # Check if it's a quota error
         if "quota" in str(e).lower():
