@@ -133,9 +133,49 @@ def submit_training_job(
         },
     }
     
+    # Create labels for easy identification in Experiments UI
+    # Labels must be lowercase, alphanumeric, hyphens, underscores
+    labels = {
+        'model_type': model_type.lower().replace('_', '-'),
+        'job_name': job_name.lower().replace('_', '-'),
+    }
+    if dataset_version:
+        labels['dataset_version'] = dataset_version.lower().replace('/', '-').replace('_', '-')
+    
+    # Try to extract date range from model config
+    try:
+        # Map model_type to config file
+        config_map = {
+            'tft': 'configs/model_tft_config.yaml',
+            'lstm': 'configs/model_lstm_config.yaml',
+            'decoder_transformer': 'configs/model_decoder_config.yaml',
+        }
+        config_path = config_map.get(model_type)
+        
+        if config_path and Path(config_path).exists():
+            with open(config_path, 'r') as f:
+                model_config = yaml.safe_load(f)
+            
+            start_date = model_config.get('data', {}).get('start_date', '')
+            end_date = model_config.get('data', {}).get('end_date', '')
+            
+            if start_date:
+                # GCP labels: lowercase, alphanumeric, hyphens, underscores only
+                labels['start_date'] = start_date.replace('/', '-')
+            if end_date:
+                labels['end_date'] = end_date.replace('/', '-')
+    except Exception as e:
+        # Non-critical, continue without date labels
+        print(f"   ⚠️  Could not extract date range: {e}")
+    
+    print(f"\n🏷️  Adding labels for identification:")
+    for key, value in labels.items():
+        print(f"   {key}: {value}")
+    
     job = aiplatform.CustomJob(
         display_name=job_name,
         worker_pool_specs=[worker_pool_spec],
+        labels=labels,
     )
     
     # Get or create TensorBoard instance

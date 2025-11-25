@@ -19,11 +19,19 @@ defaults:
 profiles:
   # CPU-only training (cheap, slow, good for testing)
   cpu:
+    machine_type: n1-standard-4  # Changed from e2-highmem-8 (more available)
+    accelerator_type: null
+    accelerator_count: 0
+    cost_per_hour: 0.19
+    use_case: "Testing, debugging, small models"
+  
+  # CPU with more memory (e2 family - might have availability issues)
+  cpu-highmem:
     machine_type: e2-highmem-8
     accelerator_type: null
     accelerator_count: 0
     cost_per_hour: 0.38
-    use_case: "Testing, debugging, small models"
+    use_case: "Testing with more memory (use cpu profile if this is unavailable)"
   
   # CPU with more memory (for FinCast on CPU)
   cpu-large:
@@ -88,6 +96,20 @@ jobs:
     dataset_version: v3
     max_trials: 20
     parallel_trials: 5
+  
+  # LSTM baseline on CPU
+  lstm-cpu:
+    profile: cpu
+    job_name: lstm-baseline-cpu
+    model_type: lstm
+    dataset_version: v1
+  
+  # LSTM baseline on GPU
+  lstm-gpu:
+    profile: gpu-t4
+    job_name: lstm-baseline-gpu
+    model_type: lstm
+    dataset_version: v1
 
 # Hyperparameters (optional overrides for specific jobs)
 hyperparameters:

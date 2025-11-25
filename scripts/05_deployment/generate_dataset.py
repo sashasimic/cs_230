@@ -85,9 +85,10 @@ def load_data_loader_for_model(model_type: str):
             'class_name': 'MultiTickerDataLoader'
         },
         'lstm': {
-            'path': Path(__file__).parent.parent / '02_features' / 'lstm' / 'lstm_data_loader.py',
-            'module_name': 'lstm_data_loader',
-            'class_name': 'LSTMDataLoader'
+            # Uses same data format as TFT and decoder_transformer
+            'path': Path(__file__).parent.parent / '02_features' / 'tft' / 'tft_data_loader.py',
+            'module_name': 'tft_data_loader',
+            'class_name': 'MultiTickerDataLoader'
         },
         'transformer': {
             'path': Path(__file__).parent.parent / '02_features' / 'transformer' / 'transformer_data_loader.py',

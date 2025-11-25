@@ -1,0 +1,159 @@
+# LSTM Multi-Horizon Inflation Forecasting Configuration
+# Compatible with decoder_transformer dataset format
+# Uses same tft_data_loader as decoder_transformer
+
+# BigQuery Configuration (required by tft_data_loader)
+bigquery:
+  project_id: inflation-prediction-478715
+  dataset_id: raw_dataset
+  
+  # Ticker data tables
+  ticker:
+    raw_table: 'raw_ohlcv'
+    synthetic_table: 'synthetic_indicators'
+  
+  # GDELT sentiment table
+  gdelt:
+    table: 'gdelt_sentiment'
+    frequency: '1d'
+
+data:
+  # Tickers to load (same as decoder_transformer)
+  tickers:
+    symbols:
+      # Equity indices
+      - SPY
+      - QQQ
+      - IWM
+      - RSP
+      # Sectors
+      - XLF
+      - XLI
+      - XLY
+      - XLK
+      - XLE
+      - XLB
+      - XLP
+      - XLV
+      - XLU
+      - XLRE
+      # Fixed income
+      - TLT
+      - IEF
+      - TIP
+      - SHY
+      # Credit
+      - LQD
+      - HYG
+      # Commodities
+      - DBC
+      - USO
+      - GLD
+      # Agriculture (target)
+      - DBA
+      - WEAT
+      - SOYB
+      # Currency
+      - UUP
+    frequency: 'daily'
+    
+    # Raw OHLCV features from BigQuery
+    raw_features:
+      - close
+      - volume
+    
+    # Synthetic/technical indicator features
+    synthetic_features:
+      - sma_50
+      - sma_200
+  
+  start_date: '2020-05-01'
+  end_date: '2025-11-13'
+  frequency: 'daily'
+  lookback_window: 192
+  prediction_horizons: [4, 8, 16]
+  
+  # Target variable (required by data loader)
+  target: 'agriculture_basket_returns'
+  target_type: 'agriculture_basket'
+  target_metric: 'returns'
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+  
+  # Normalization
+  normalize: true
+  normalization_method: 'standard'
+  
+  # Weekend handling
+  skip_weekends: true
+  
+  # Forward filling for missing values
+  forward_fill:
+    enabled: true
+    log_stats: true
+    max_fill_limit: 5
+  
+  gdelt:
+    enabled: true
+    frequency: '1d'
+    topic_groups: ['inflation_prices']
+    features:
+      - weighted_avg_tone
+      - weighted_avg_polarity
+      - num_articles
+      - num_sources
+    normalize_counts: true
+    include_lags: true
+    lag_periods: [1, 7, 30]
+
+model:
+  type: 'lstm'
+  
+  # LSTM architecture
+  hidden_dim: 64        # LSTM hidden dimension
+  num_layers: 2         # Number of LSTM layers
+  dropout: 0.2          # Dropout rate
+  
+  lstm:
+    bidirectional: false  # Use bidirectional LSTM (default: false)
+  
+  # Feature columns (must match decoder_transformer for consistency)
+  time_varying_known:
+    - month_sin
+    - month_cos
+    - is_weekend
+  time_varying_unknown:
+    - close
+    - volume
+    - sma_50
+    - sma_200
+    - weighted_avg_tone
+    - weighted_avg_polarity
+    - num_articles
+    - num_sources
+    - sentiment_lag_1
+    - sentiment_lag_7
+    - sentiment_lag_30
+
+training:
+  batch_size: 64
+  epochs: 100
+  learning_rate: 0.001
+  weight_decay: 0.01
+  gradient_clip_norm: 1.0
+  
+  early_stopping:
+    enabled: true
+    patience: 15
+
+logging:
+  level: 'INFO'
+  tensorboard: true
+  log_dir: 'logs/tensorboard'
+
+hardware:
+  num_workers: 0
+  pin_memory: false
+
+seed: 42

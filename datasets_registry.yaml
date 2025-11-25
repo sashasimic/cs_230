@@ -88,3 +88,12 @@ decoder_transformer/v3:
   gcs_base_path: gs://inflation-prediction-478715-models/datasets/decoder_transformer/v3/
   raw_dataset_id: projects/233829279510/locations/us-central1/datasets/1455838607326576640
   processed_dataset_id: N/A
+lstm/v1:
+  version: lstm/v1
+  model_type: lstm
+  version_number: v1
+  local_path: data/datasets/lstm/v1
+  created: '2025-11-24T17:04:56.177626'
+  gcs_base_path: gs://inflation-prediction-478715-models/datasets/lstm/v1/
+  raw_dataset_id: projects/233829279510/locations/us-central1/datasets/6447515844313350144
+  processed_dataset_id: N/A
