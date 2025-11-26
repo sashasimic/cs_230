@@ -76,12 +76,13 @@ def load_data(config_path: str, force_refresh: bool = False):
     return dataloaders, scalers
 
 
-def train_model(config_path: str):
+def train_model(config_path: str, dataset_version: str = None):
     """
     Train TFT model using core training logic.
     
     Args:
         config_path: Path to model config YAML
+        dataset_version: Optional dataset version (e.g., 'v1', 'v3')
     """
     # Import training module dynamically
     train_module_path = project_root / 'scripts' / '03_training' / 'tft' / 'tft_train.py'
@@ -102,11 +103,13 @@ def train_model(config_path: str):
     print("   Starting TFT Training (Local)")
     print("="*80)
     print(f"\nConfig: {config_path}")
+    if dataset_version:
+        print(f"Dataset version: {dataset_version}")
     print(f"Output: models/tft/tft_best.pt")
     print()
     
     # Run training
-    train_fn(config_path)
+    train_fn(config_path, dataset_version=dataset_version)
     
     print("\n" + "="*80)
     print("   Training Complete!")
@@ -143,6 +146,12 @@ Examples:
         help='Path to model config YAML (default: configs/model_tft_config.yaml)'
     )
     parser.add_argument(
+        '--dataset-version',
+        type=str,
+        default=None,
+        help='Dataset version to use (e.g., v1, v3)'
+    )
+    parser.add_argument(
         '--reload',
         action='store_true',
         help='Force reload data from BigQuery (ignore cached data/processed/)'
@@ -168,7 +177,7 @@ Examples:
         dataloaders, scalers = load_data(args.config, force_refresh=args.reload)
         
         # Train model
-        train_model(args.config)
+        train_model(args.config, dataset_version=args.dataset_version)
         
     except Exception as e:
         print(f"\n❌ Training failed: {str(e)}")

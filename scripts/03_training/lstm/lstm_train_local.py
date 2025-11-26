@@ -74,12 +74,14 @@ def main():
     print("="*80)
     print(f"\n📋 Configuration:")
     print(f"   Config: {args.config}")
+    print(f"   Dataset version: {args.dataset_version}")
     print("="*80)
     
     # Train
     try:
         train(
-            config_path=args.config
+            config_path=args.config,
+            dataset_version=args.dataset_version
         )
     except Exception as e:
         print(f"\n❌ Training failed: {str(e)}")

@@ -471,22 +471,23 @@ def compute_layer_grad_stats(model: nn.Module) -> dict:
     return aggregated
 
 
-def compute_metrics(predictions: torch.Tensor, targets: torch.Tensor) -> Dict[str, float]:
+def compute_metrics(predictions: torch.Tensor, targets: torch.Tensor, horizons: list = None) -> Dict[str, float]:
     """
     Compute evaluation metrics.
     
     Args:
         predictions: [batch, horizons]
         targets: [batch, horizons]
+        horizons: Optional list of actual horizon values for labeling
     
     Returns:
-        Dictionary of metrics
+        Dictionary of metrics (includes per-horizon metrics if horizons provided)
     """
     with torch.no_grad():
-        # MAE
+        # Overall MAE
         mae = torch.abs(predictions - targets).mean().item()
         
-        # MSE
+        # Overall MSE
         mse = ((predictions - targets) ** 2).mean().item()
         
         # Directional accuracy
@@ -494,12 +495,26 @@ def compute_metrics(predictions: torch.Tensor, targets: torch.Tensor) -> Dict[st
         target_direction = torch.sign(targets)
         dir_acc = (pred_direction == target_direction).float().mean().item() * 100
         
-        return {
+        metrics = {
             'mae': mae,
             'mse': mse,
             'rmse': np.sqrt(mse),
             'dir_acc': dir_acc
         }
+        
+        # Compute per-horizon metrics
+        num_horizons = predictions.shape[1]
+        for h_idx in range(num_horizons):
+            h_mae = torch.abs(predictions[:, h_idx] - targets[:, h_idx]).mean().item()
+            h_rmse = torch.sqrt(((predictions[:, h_idx] - targets[:, h_idx]) ** 2).mean()).item()
+            
+            # Use actual horizon values for labeling
+            horizon_label = f"H{horizons[h_idx]}" if (horizons and h_idx < len(horizons)) else f"H{h_idx+1}"
+            
+            metrics[f"{horizon_label}_MAE"] = h_mae
+            metrics[f"{horizon_label}_RMSE"] = h_rmse
+        
+        return metrics
 
 
 def train_epoch(model: nn.Module, dataloader, criterion, optimizer, device, epoch: int = 0, clip_norm: float = 1.0) -> dict:
@@ -565,7 +580,7 @@ def train_epoch(model: nn.Module, dataloader, criterion, optimizer, device, epoc
     }
 
 
-def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optional[Dict] = None):
+def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optional[Dict] = None, dataset_version: Optional[str] = None):
     """
     Core TFT training function.
     
@@ -573,6 +588,7 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
         config_path: Path to model config YAML
         dataloaders: Optional pre-loaded DataLoaders (if None, will load from data/processed/)
         scalers: Optional pre-loaded scalers
+        dataset_version: Optional dataset version (e.g., 'v1', 'v3'). If provided, loads from data/datasets/tft/{version}/processed/
     """
     # Load config
     with open(config_path, 'r') as f:
@@ -580,18 +596,76 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     
     # Load data if not provided
     if dataloaders is None:
-        print("\n📂 Loading data from data/processed/...")
-        import importlib.util
-        data_loader_path = project_root / 'scripts' / '02_features' / 'tft' / 'tft_data_loader.py'
-        spec = importlib.util.spec_from_file_location('tft_data_loader', data_loader_path)
-        data_loader_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(data_loader_module)
-        
-        dataloaders, scalers = data_loader_module.create_data_loaders(
-            config_path=config_path,
-            force_refresh=False
-        )
-        print("✅ Data loaded!")
+        # If dataset_version is specified, load from versioned directory
+        if dataset_version:
+            model_type = config.get('model', {}).get('type', 'tft')
+            data_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed')
+            print(f"\n📂 Loading data from versioned dataset: {data_path}")
+            
+            if not data_path.exists():
+                raise FileNotFoundError(f"Data directory not found: {data_path}")
+            
+            # Load preprocessed arrays directly
+            import numpy as np
+            from torch.utils.data import TensorDataset, DataLoader
+            
+            train_X_np = np.load(data_path / 'X_train.npy', allow_pickle=True)
+            train_y_np = np.load(data_path / 'y_train.npy', allow_pickle=True)
+            val_X_np = np.load(data_path / 'X_val.npy', allow_pickle=True)
+            val_y_np = np.load(data_path / 'y_val.npy', allow_pickle=True)
+            test_X_np = np.load(data_path / 'X_test.npy', allow_pickle=True)
+            test_y_np = np.load(data_path / 'y_test.npy', allow_pickle=True)
+            
+            # Handle object dtype
+            if train_X_np.dtype == object:
+                train_X_np = train_X_np.item() if train_X_np.shape == () else np.array(train_X_np.tolist())
+            if train_y_np.dtype == object:
+                train_y_np = train_y_np.item() if train_y_np.shape == () else np.array(train_y_np.tolist())
+            if val_X_np.dtype == object:
+                val_X_np = val_X_np.item() if val_X_np.shape == () else np.array(val_X_np.tolist())
+            if val_y_np.dtype == object:
+                val_y_np = val_y_np.item() if val_y_np.shape == () else np.array(val_y_np.tolist())
+            if test_X_np.dtype == object:
+                test_X_np = test_X_np.item() if test_X_np.shape == () else np.array(test_X_np.tolist())
+            if test_y_np.dtype == object:
+                test_y_np = test_y_np.item() if test_y_np.shape == () else np.array(test_y_np.tolist())
+            
+            # Convert to PyTorch tensors
+            import torch
+            train_X = torch.tensor(train_X_np, dtype=torch.float32)
+            train_y = torch.tensor(train_y_np, dtype=torch.float32)
+            val_X = torch.tensor(val_X_np, dtype=torch.float32)
+            val_y = torch.tensor(val_y_np, dtype=torch.float32)
+            test_X = torch.tensor(test_X_np, dtype=torch.float32)
+            test_y = torch.tensor(test_y_np, dtype=torch.float32)
+            
+            # Create datasets and dataloaders
+            batch_size = config['training']['batch_size']
+            train_dataset = TensorDataset(train_X, train_y)
+            val_dataset = TensorDataset(val_X, val_y)
+            test_dataset = TensorDataset(test_X, test_y)
+            
+            dataloaders = {
+                'train': DataLoader(train_dataset, batch_size=batch_size, shuffle=True),
+                'val': DataLoader(val_dataset, batch_size=batch_size, shuffle=False),
+                'test': DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+            }
+            scalers = None  # Scalers not available when loading from numpy
+            print("✅ Data loaded!")
+        else:
+            # Use existing create_data_loaders for default behavior
+            print("\n📂 Loading data from data/processed/...")
+            import importlib.util
+            data_loader_path = project_root / 'scripts' / '02_features' / 'tft' / 'tft_data_loader.py'
+            spec = importlib.util.spec_from_file_location('tft_data_loader', data_loader_path)
+            data_loader_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(data_loader_module)
+            
+            dataloaders, scalers = data_loader_module.create_data_loaders(
+                config_path=config_path,
+                force_refresh=False
+            )
+            print("✅ Data loaded!")
     
     # Print detailed feature information
     print("\n" + "="*80)
@@ -612,7 +686,13 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     
     # Display date range from metadata (actual data) and sample counts
     try:
-        metadata_path = Path('data/processed/metadata.yaml')
+        # Use same path logic as data loading
+        if dataset_version:
+            model_type = config.get('model', {}).get('type', 'tft')
+            metadata_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml')
+        else:
+            metadata_path = Path('data/processed/metadata.yaml')
+        
         if metadata_path.exists():
             with open(metadata_path, 'r') as f:
                 metadata = yaml.safe_load(f)
@@ -667,8 +747,13 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     # Load and print actual final features being used
     # Note: Config shows 14 base features, but data has more after pivoting (e.g., close_SPY, close_QQQ)
     try:
-        # Load from metadata.yaml (should exist in data/processed/)
-        metadata_path = Path('data/processed/metadata.yaml')
+        # Use same path logic as data loading
+        if dataset_version:
+            model_type = config.get('model', {}).get('type', 'tft')
+            metadata_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml')
+        else:
+            metadata_path = Path('data/processed/metadata.yaml')
+        
         if metadata_path.exists():
             with open(metadata_path, 'r') as f:
                 metadata = yaml.safe_load(f)
@@ -690,8 +775,26 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
         import traceback
         traceback.print_exc()
     
-    # Output targets
-    horizons_config = config['data']['prediction_horizons']
+    # Output targets - read from dataset metadata if available, otherwise from config
+    horizons_config = None
+    if dataset_version:
+        try:
+            model_type = config.get('model', {}).get('type', 'tft')
+            metadata_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml')
+            if metadata_path.exists():
+                with open(metadata_path, 'r') as f:
+                    dataset_metadata = yaml.safe_load(f)
+                    horizons_config = dataset_metadata.get('prediction_horizons', None)
+                    if horizons_config:
+                        print(f"\n✅ Using prediction horizons from dataset metadata: {horizons_config}")
+        except Exception as e:
+            print(f"\n⚠️  Could not read horizons from metadata: {e}")
+    
+    # Fallback to config if not found in metadata
+    if horizons_config is None:
+        horizons_config = config['data']['prediction_horizons']
+        print(f"\n📄 Using prediction horizons from config: {horizons_config}")
+    
     print(f"\n🎯 Output Targets ({len(horizons_config)} horizons):")
     for i, h in enumerate(horizons_config, 1):
         print(f"  {i}. Horizon {h} (target_{h}_periods_ahead)")
@@ -872,7 +975,7 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
         # Compute metrics
         all_preds = torch.cat(all_preds, dim=0)
         all_targets = torch.cat(all_targets, dim=0)
-        metrics = compute_metrics(all_preds, all_targets)
+        metrics = compute_metrics(all_preds, all_targets, horizons=horizons_config)
         
         epoch_time = time.time() - epoch_start_time
         total_elapsed = time.time() - training_start_time
@@ -881,6 +984,15 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
         print(f"  Train Loss: {train_loss:.6f}")
         print(f"  Val   Loss: {val_loss:.6f}, MAE: {metrics['mae']:.6f}, RMSE: {metrics['rmse']:.6f}")
         print(f"  Dir Acc (H1): {metrics['dir_acc']:.2f}%")
+        
+        # Print per-horizon MAE
+        horizon_strs = []
+        for key, value in metrics.items():
+            if 'MAE' in key and key != 'mae':  # Skip overall MAE
+                horizon_strs.append(f"{key}={value:.6f}")
+        if horizon_strs:
+            print(f"  Per-Horizon MAE: {', '.join(horizon_strs)}")
+        
         print(f"  Grad Norm (unclipped): avg={avg_unclipped:.4f}, max={max_unclipped:.4f}")
         print(f"  Grad Norm (clipped):   avg={avg_clipped:.4f}, max={max_clipped:.4f}")
         
@@ -903,6 +1015,11 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
             writer.add_scalar('Gradients/Unclipped_Avg', avg_unclipped, epoch)
             writer.add_scalar('Gradients/Clipped_Avg', avg_clipped, epoch)
             writer.add_scalar('LR', current_lr, epoch)
+            
+            # Log per-horizon metrics to TensorBoard
+            for metric_name, metric_value in metrics.items():
+                if metric_name not in ['mae', 'mse', 'rmse', 'dir_acc']:  # Skip overall metrics
+                    writer.add_scalar(f'PerHorizon/{metric_name}', metric_value, epoch)
         
         # Learning rate scheduler step (if enabled)
         if scheduler is not None:

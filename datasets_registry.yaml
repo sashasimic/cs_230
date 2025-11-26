@@ -124,3 +124,21 @@ tft/v2:
   gcs_base_path: gs://inflation-prediction-478715-models/datasets/tft/v2/
   raw_dataset_id: projects/233829279510/locations/us-central1/datasets/1469067931231977472
   processed_dataset_id: N/A
+lstm/v3:
+  version: lstm/v3
+  model_type: lstm
+  version_number: v3
+  local_path: data/datasets/lstm/v3
+  created: '2025-11-26T14:34:34.852449'
+  gcs_base_path: gs://inflation-prediction-478715-models/datasets/lstm/v3/
+  raw_dataset_id: projects/233829279510/locations/us-central1/datasets/4030490219298947072
+  processed_dataset_id: N/A
+lstm/v4:
+  version: lstm/v4
+  model_type: lstm
+  version_number: v4
+  local_path: data/datasets/lstm/v4
+  created: '2025-11-26T15:19:39.274757'
+  gcs_base_path: gs://inflation-prediction-478715-models/datasets/lstm/v4/
+  raw_dataset_id: projects/233829279510/locations/us-central1/datasets/6001237268738605056
+  processed_dataset_id: N/A

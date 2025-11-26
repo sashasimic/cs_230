@@ -459,13 +459,17 @@ def train_epoch(model, train_loader, optimizer, criterion, device, clip_norm=Non
     return avg_loss, avg_unclipped, max_unclipped, avg_clipped, max_clipped
 
 
-def evaluate(model, val_loader, criterion, device, use_teacher_forcing=True, log_mode=False):
+def evaluate(model, val_loader, criterion, device, use_teacher_forcing=True, log_mode=False, horizons=None):
     """Evaluate model on validation set.
     
     Args:
         use_teacher_forcing: If True, use ground truth for next-step inputs (faster, cleaner metrics).
                             If False, use pure autoregressive loop (realistic inference).
         log_mode: If True, print which evaluation mode is being used (for first call)
+        horizons: Optional list of actual horizon values for labeling per-horizon metrics
+    
+    Returns:
+        avg_loss, mae, rmse, dir_acc, per_horizon_metrics
     """
     model.eval()
     total_loss = 0.0
@@ -508,13 +512,27 @@ def evaluate(model, val_loader, criterion, device, use_teacher_forcing=True, log
     true_direction = (all_targets[:, 0] > 0).astype(int)
     dir_acc = (pred_direction == true_direction).mean()
     
-    return avg_loss, mae, rmse, dir_acc
+    # Compute per-horizon metrics
+    per_horizon_metrics = {}
+    num_horizons = all_predictions.shape[1]
+    for h_idx in range(num_horizons):
+        h_mae = np.abs(all_predictions[:, h_idx] - all_targets[:, h_idx]).mean()
+        h_rmse = np.sqrt(((all_predictions[:, h_idx] - all_targets[:, h_idx]) ** 2).mean())
+        
+        # Use actual horizon values for labeling
+        horizon_label = f"H{horizons[h_idx]}" if (horizons and h_idx < len(horizons)) else f"H{h_idx+1}"
+        
+        per_horizon_metrics[f"{horizon_label}_MAE"] = h_mae
+        per_horizon_metrics[f"{horizon_label}_RMSE"] = h_rmse
+    
+    return avg_loss, mae, rmse, dir_acc, per_horizon_metrics
 
 
 def train(
     config_path: str,
     dataloaders: Optional[Dict] = None,
-    scalers: Optional[Dict] = None
+    scalers: Optional[Dict] = None,
+    dataset_version: Optional[str] = None
 ):
     """
     Core decoder transformer training function.
@@ -523,6 +541,7 @@ def train(
         config_path: Path to model config YAML
         dataloaders: Optional pre-loaded DataLoaders (if None, will load from data/processed/)
         scalers: Optional pre-loaded scalers
+        dataset_version: Optional dataset version (e.g., 'v1', 'v9'). If provided, loads from data/datasets/decoder_transformer/{version}/processed/
         
     Note:
         FinCast configuration is now read from the config YAML file under the 'fincast' section.
@@ -533,12 +552,22 @@ def train(
     
     # Load data if not provided
     if dataloaders is None:
-        print("\n📂 Loading data from data/processed/...")
         from torch.utils.data import TensorDataset, DataLoader
         
-        # Load preprocessed data directly from .npy files
-        data_dir = Path('data/processed')
+        # Determine data path based on dataset_version
+        if dataset_version:
+            model_type = config.get('model', {}).get('type', 'decoder_transformer')
+            data_dir = Path(f'data/datasets/{model_type}/{dataset_version}/processed')
+            print(f"\n📂 Loading data from versioned dataset: {data_dir}")
+        else:
+            data_dir = Path('data/processed')
+            print(f"\n📂 Loading data from default location: {data_dir}")
         
+        # Verify path exists
+        if not data_dir.exists():
+            raise FileNotFoundError(f"Data directory not found: {data_dir}")
+        
+        # Load preprocessed data directly from .npy files
         train_X_np = np.load(data_dir / 'X_train.npy', allow_pickle=True)
         train_y_np = np.load(data_dir / 'y_train.npy', allow_pickle=True)
         val_X_np = np.load(data_dir / 'X_val.npy', allow_pickle=True)
@@ -619,7 +648,13 @@ def train(
     
     # Display date range and sample counts from metadata (actual data)
     try:
-        metadata_path = Path('data/processed/metadata.yaml')
+        # Use same path logic as data loading
+        if dataset_version:
+            model_type = config.get('model', {}).get('type', 'decoder_transformer')
+            metadata_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml')
+        else:
+            metadata_path = Path('data/processed/metadata.yaml')
+        
         if metadata_path.exists():
             with open(metadata_path, 'r') as f:
                 metadata = yaml.safe_load(f)
@@ -657,7 +692,13 @@ def train(
     
     # Load feature metadata if available
     try:
-        metadata_path = Path('data/processed/metadata.yaml')
+        # Use same path logic as data loading
+        if dataset_version:
+            model_type = config.get('model', {}).get('type', 'decoder_transformer')
+            metadata_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml')
+        else:
+            metadata_path = Path('data/processed/metadata.yaml')
+        
         if metadata_path.exists():
             with open(metadata_path, 'r') as f:
                 metadata = yaml.safe_load(f)
@@ -671,7 +712,26 @@ def train(
     except Exception as e:
         print(f"\n⚠️  Could not load feature metadata: {e}")
     
-    horizons_config = config['data']['prediction_horizons']
+    # Output targets - read from dataset metadata if available, otherwise from config
+    horizons_config = None
+    if dataset_version:
+        try:
+            model_type = config.get('model', {}).get('type', 'decoder_transformer')
+            metadata_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml')
+            if metadata_path.exists():
+                with open(metadata_path, 'r') as f:
+                    dataset_metadata = yaml.safe_load(f)
+                    horizons_config = dataset_metadata.get('prediction_horizons', None)
+                    if horizons_config:
+                        print(f"\n✅ Using prediction horizons from dataset metadata: {horizons_config}")
+        except Exception as e:
+            print(f"\n⚠️  Could not read horizons from metadata: {e}")
+    
+    # Fallback to config if not found in metadata
+    if horizons_config is None:
+        horizons_config = config['data']['prediction_horizons']
+        print(f"\n📄 Using prediction horizons from config: {horizons_config}")
+    
     print(f"\n🎯 Output Targets ({len(horizons_config)} horizons):")
     for i, h in enumerate(horizons_config, 1):
         print(f"  {i}. Horizon {h} periods ahead")
@@ -850,10 +910,11 @@ def train(
             model, train_loader, optimizer, criterion, device, clip_norm
         )
         
-        val_loss, mae, rmse, dir_acc = evaluate(
+        val_loss, mae, rmse, dir_acc, per_horizon_metrics = evaluate(
             model, val_loader, criterion, device, 
             use_teacher_forcing=use_teacher_forcing_eval,
-            log_mode=(epoch == 0)  # Log mode only on first epoch
+            log_mode=(epoch == 0),  # Log mode only on first epoch
+            horizons=horizons_config
         )
         
         epoch_time = time.time() - epoch_start_time
@@ -863,6 +924,15 @@ def train(
         print(f"  Train Loss: {train_loss:.6f}")
         print(f"  Val   Loss: {val_loss:.6f}, MAE: {mae:.6f}, RMSE: {rmse:.6f}")
         print(f"  Dir Acc (H1): {dir_acc * 100:.2f}%")
+        
+        # Print per-horizon MAE
+        horizon_strs = []
+        for key, value in per_horizon_metrics.items():
+            if 'MAE' in key:
+                horizon_strs.append(f"{key}={value:.6f}")
+        if horizon_strs:
+            print(f"  Per-Horizon MAE: {', '.join(horizon_strs)}")
+        
         print(f"  Grad Norm (unclipped): avg={avg_unclipped:.4f}, max={max_unclipped:.4f}")
         print(f"  Grad Norm (clipped):   avg={avg_clipped:.4f}, max={max_clipped:.4f}")
         
@@ -876,6 +946,10 @@ def train(
             writer.add_scalar('Gradients/Unclipped_Avg', avg_unclipped, epoch)
             writer.add_scalar('Gradients/Clipped_Avg', avg_clipped, epoch)
             writer.add_scalar('LR', config['training']['learning_rate'], epoch)
+            
+            # Log per-horizon metrics to TensorBoard
+            for metric_name, metric_value in per_horizon_metrics.items():
+                writer.add_scalar(f'PerHorizon/{metric_name}', metric_value, epoch)
         
         # Every 10 epochs, dump layer-wise grad stats
         if (epoch + 1) % 10 == 0:

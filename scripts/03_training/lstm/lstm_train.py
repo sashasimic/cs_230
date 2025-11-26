@@ -145,10 +145,10 @@ def train_epoch(
         loss.backward()
         
         # Compute gradient norms before clipping
-        total_norm = torch.sqrt(sum(
+        total_norm = sum(
             p.grad.detach().norm(2).item() ** 2
             for p in model.parameters() if p.grad is not None
-        ))
+        ) ** 0.5
 
         unclipped_norms.append(total_norm)
         max_unclipped = max(max_unclipped, total_norm)
@@ -158,10 +158,10 @@ def train_epoch(
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip_norm)
             
             # Compute gradient norms after clipping
-            total_norm_clipped = torch.sqrt(sum(
+            total_norm_clipped = sum(
                 p.grad.detach().norm(2).item() ** 2
                 for p in model.parameters() if p.grad is not None
-            ))
+            ) ** 0.5
             
             clipped_norms.append(total_norm_clipped)
             max_clipped = max(max_clipped, total_norm_clipped)
@@ -169,9 +169,12 @@ def train_epoch(
             clipped_norms.append(total_norm)
             max_clipped = max_unclipped
         
+        # Update parameters using p.grad
         optimizer.step()
         
+        # Accumulate loss from this batch
         total_loss += loss.item()
+        
         # Progress indicator
         if (batch_idx + 1) % max(1, total_batches // 3) == 0 or batch_idx == total_batches - 1:
             print(f"\r  Training: {batch_idx + 1}/{total_batches} batches (loss: {loss.item():.4f})", end='', flush=True)
@@ -188,12 +191,16 @@ def evaluate(
     model: nn.Module,
     val_loader: DataLoader,
     lossFun: nn.Module,
-    device: torch.device
-) -> Tuple[float, float, float, float]:
+    device: torch.device,
+    horizons: Optional[list] = None
+) -> Tuple[float, float, float, float, Dict[str, float]]:
     """Evaluate model on validation set.
     
+    Args:
+        horizons: List of horizon values [7, 14, 30] for logging
+    
     Returns:
-        val_loss, mae, rmse, directional_accuracy
+        val_loss, mae, rmse, directional_accuracy, per_horizon_metrics
     """
     model.eval()
     total_loss = 0.0
@@ -222,10 +229,23 @@ def evaluate(
     all_predictions = np.concatenate(all_predictions, axis=0)
     all_targets = np.concatenate(all_targets, axis=0)
     
-    # Compute metrics
+    # Compute overall metrics
     val_loss = total_loss / len(val_loader)
     mae = np.mean(np.abs(all_predictions - all_targets))
     rmse = np.sqrt(np.mean((all_predictions - all_targets) ** 2))
+    
+    # Compute per-horizon metrics
+    per_horizon_metrics = {}
+    num_horizons = all_predictions.shape[1]
+    for h_idx in range(num_horizons):
+        h_mae = np.mean(np.abs(all_predictions[:, h_idx] - all_targets[:, h_idx]))
+        h_rmse = np.sqrt(np.mean((all_predictions[:, h_idx] - all_targets[:, h_idx]) ** 2))
+        
+        # Use actual horizon values for labeling (e.g., H7, H14, H30)
+        horizon_label = f"H{horizons[h_idx]}" if (horizons and h_idx < len(horizons)) else f"H{h_idx+1}"
+        
+        per_horizon_metrics[f"{horizon_label}_MAE"] = h_mae
+        per_horizon_metrics[f"{horizon_label}_RMSE"] = h_rmse
     
     # Directional accuracy (for first horizon only)
     pred_diff = np.diff(all_predictions[:, 0])  # Direction of predictions
@@ -233,13 +253,14 @@ def evaluate(
     correct_direction = np.sum((pred_diff * true_diff) > 0)
     dir_acc = correct_direction / len(pred_diff) if len(pred_diff) > 0 else 0.0
     
-    return val_loss, mae, rmse, dir_acc
+    return val_loss, mae, rmse, dir_acc, per_horizon_metrics
 
 
 def train(
     config_path: str,
     dataloaders: Optional[Dict] = None,
-    scalers: Optional[Dict] = None
+    scalers: Optional[Dict] = None,
+    dataset_version: Optional[str] = None
 ):
     """
     Core LSTM training function.
@@ -248,26 +269,50 @@ def train(
         config_path: Path to model config YAML
         dataloaders: Optional pre-loaded DataLoaders (if None, will load from data/processed/)
         scalers: Optional pre-loaded scalers
+        dataset_version: Optional dataset version (e.g., 'v1', 'v3'). If provided, loads from data/datasets/lstm/{version}/processed/
     """
     # Load configuration
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     
+    # Set random seeds for reproducibility
+    seed = config.get('training', {}).get('random_seed', 42)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    
     print("\n" + "="*80)
     print("   LSTM Multi-Horizon Forecasting")
     print("="*80)
+    print(f"\n🎲 Random seed: {seed}")
     
     # Load data if not provided
     if dataloaders is None:
-        print("\n📂 Loading data from data/processed/...")
+        # Determine data path based on dataset_version
+        if dataset_version:
+            # Get model type from config to construct correct path
+            model_type = config.get('model', {}).get('type', 'lstm')
+            data_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed')
+            print(f"\n📂 Loading data from versioned dataset: {data_path}")
+        else:
+            data_path = Path('data/processed')
+            print(f"\n📂 Loading data from default location: {data_path}")
+        
+        # Verify path exists
+        if not data_path.exists():
+            raise FileNotFoundError(f"Data directory not found: {data_path}")
         
         # Load preprocessed arrays
-        train_X_np = np.load('data/processed/X_train.npy', allow_pickle=True)
-        train_y_np = np.load('data/processed/y_train.npy', allow_pickle=True)
-        val_X_np = np.load('data/processed/X_val.npy', allow_pickle=True)
-        val_y_np = np.load('data/processed/y_val.npy', allow_pickle=True)
-        test_X_np = np.load('data/processed/X_test.npy', allow_pickle=True)
-        test_y_np = np.load('data/processed/y_test.npy', allow_pickle=True)
+        train_X_np = np.load(data_path / 'X_train.npy', allow_pickle=True)
+        train_y_np = np.load(data_path / 'y_train.npy', allow_pickle=True)
+        val_X_np = np.load(data_path / 'X_val.npy', allow_pickle=True)
+        val_y_np = np.load(data_path / 'y_val.npy', allow_pickle=True)
+        test_X_np = np.load(data_path / 'X_test.npy', allow_pickle=True)
+        test_y_np = np.load(data_path / 'y_test.npy', allow_pickle=True)
         
         # Handle object dtype (sometimes happens with numpy saves)
         if train_X_np.dtype == object:
@@ -333,14 +378,47 @@ def train(
     print("   LSTM Configuration")
     print("="*80)
     
+    # Get prediction horizons - read from dataset metadata if available, otherwise from config
+    horizons = None
+    if dataset_version:
+        # When using versioned dataset, read horizons from its metadata
+        try:
+            if dataset_version:
+                model_type = config.get('model', {}).get('type', 'lstm')
+                metadata_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml')
+            else:
+                metadata_path = Path('data/processed/metadata.yaml')
+            
+            if metadata_path.exists():
+                with open(metadata_path, 'r') as f:
+                    dataset_metadata = yaml.safe_load(f)
+                    horizons = dataset_metadata.get('prediction_horizons', None)
+                    if horizons:
+                        print(f"\n✅ Using prediction horizons from dataset metadata: {horizons}")
+        except Exception as e:
+            print(f"\n⚠️  Could not read horizons from metadata: {e}")
+    
+    # Fallback to config if not found in metadata
+    if horizons is None:
+        horizons = config['data'].get('prediction_horizons', [])
+        print(f"\n📄 Using prediction horizons from config: {horizons}")
+    
     print(f"\n📊 Data Dimensions:")
     print(f"  Lookback window: {lookback} timesteps")
     print(f"  Number of features: {num_features}")
-    print(f"  Prediction horizons: {num_horizons}")
+    print(f"  Number of horizons: {num_horizons}")
+    if horizons:
+        print(f"  Prediction horizons: {horizons} days ahead")
     
     # Display date range and sample counts from metadata (actual data)
     try:
-        metadata_path = Path('data/processed/metadata.yaml')
+        # Use same path logic as data loading
+        if dataset_version:
+            model_type = config.get('model', {}).get('type', 'lstm')
+            metadata_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml')
+        else:
+            metadata_path = Path('data/processed/metadata.yaml')
+        
         if metadata_path.exists():
             with open(metadata_path, 'r') as f:
                 metadata = yaml.safe_load(f)
@@ -482,8 +560,8 @@ def train(
             model, train_loader, optimizer, lossFun, device, clip_norm
         )
         
-        val_loss, mae, rmse, dir_acc = evaluate(
-            model, val_loader, lossFun, device
+        val_loss, mae, rmse, dir_acc, per_horizon_metrics = evaluate(
+            model, val_loader, lossFun, device, horizons
         )
         
         epoch_time = time.time() - epoch_start_time
@@ -493,6 +571,16 @@ def train(
         print(f"  Train Loss: {train_loss:.6f}")
         print(f"  Val   Loss: {val_loss:.6f}, MAE: {mae:.6f}, RMSE: {rmse:.6f}")
         print(f"  Dir Acc (H1): {dir_acc * 100:.2f}%")
+        
+        # Log per-horizon metrics
+        if per_horizon_metrics:
+            horizon_strs = []
+            for key, value in sorted(per_horizon_metrics.items()):
+                if 'MAE' in key:
+                    horizon_strs.append(f"{key}={value:.6f}")
+            if horizon_strs:
+                print(f"  Per-Horizon MAE: {', '.join(horizon_strs)}")
+        
         print(f"  Grad Norm (unclipped): avg={avg_unclipped:.4f}, max={max_unclipped:.4f}")
         print(f"  Grad Norm (clipped):   avg={avg_clipped:.4f}, max={max_clipped:.4f}")
         
@@ -506,6 +594,10 @@ def train(
             writer.add_scalar('Gradients/Unclipped_Avg', avg_unclipped, epoch)
             writer.add_scalar('Gradients/Clipped_Avg', avg_clipped, epoch)
             writer.add_scalar('LR', train_cfg['learning_rate'], epoch)
+            
+            # Log per-horizon metrics to TensorBoard
+            for metric_name, metric_value in per_horizon_metrics.items():
+                writer.add_scalar(f'PerHorizon/{metric_name}', metric_value, epoch)
         
         print("")
         
@@ -530,13 +622,41 @@ def train(
         else:
             patience_counter += 1
             if patience_counter >= early_stopping_patience:
-                print(f"\n⏹️  Early stopping triggered (patience: {patience_counter})")
+                print(f"\n⏹️  Early stopping triggered (patience: {early_stopping_patience})")
                 break
     
     # Close TensorBoard writer (if available)
     if writer is not None:
         writer.close()
         print(f"\n📊 TensorBoard logs finalized")
+    
+    # Final evaluation on test set
+    print("\n" + "="*80)
+    print("   Final Test Set Evaluation")
+    print("="*80)
+    
+    # Load best model (weights_only=False is safe for our own checkpoint)
+    checkpoint = torch.load(output_dir / 'lstm_best.pt', weights_only=False)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    test_loss, test_mae, test_rmse, test_dir_acc, test_per_horizon = evaluate(
+        model, test_loader, lossFun, device, horizons
+    )
+    
+    print(f"\n📊 Test Set Results:")
+    print(f"  Test Loss: {test_loss:.6f}")
+    print(f"  Test MAE: {test_mae:.6f}")
+    print(f"  Test RMSE: {test_rmse:.6f}")
+    print(f"  Test Dir Acc (H1): {test_dir_acc * 100:.2f}%")
+    
+    # Log per-horizon test metrics
+    if test_per_horizon:
+        horizon_strs = []
+        for key, value in sorted(test_per_horizon.items()):
+            if 'MAE' in key:
+                horizon_strs.append(f"{key}={value:.6f}")
+        if horizon_strs:
+            print(f"  Per-Horizon MAE: {', '.join(horizon_strs)}")
     
     print("\n" + "="*80)
     print("   Training Complete")
