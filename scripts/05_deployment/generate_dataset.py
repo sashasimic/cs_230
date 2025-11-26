@@ -238,15 +238,32 @@ def generate_data(config_path: str, version: str, model_type: str = 'tft', base_
     
     print(f"\n📄 Manifest saved: {manifest_file}")
     
+    # Read metadata.yaml to get date range and horizons
+    metadata_path = processed_dir / 'metadata.yaml'
+    metadata = {}
+    if metadata_path.exists():
+        with open(metadata_path, 'r') as f:
+            metadata = yaml.safe_load(f)
+    
     print("\n" + "="*80)
     print(f"✅ Dataset {version} generated successfully!")
     print("="*80)
     print(f"\n📊 Summary:")
+    
+    # Show date range if available
+    if 'start_date' in metadata and 'end_date' in metadata:
+        print(f"   Date Range: {metadata['start_date']} to {metadata['end_date']}")
+    
     print(f"   Train: {manifest['data_stats']['train_samples']:,} sequences")
     print(f"   Val: {manifest['data_stats']['val_samples']:,} sequences")
     print(f"   Test: {manifest['data_stats']['test_samples']:,} sequences")
     print(f"   Features: {manifest['data_stats']['num_features']} (lookback: {manifest['data_stats']['lookback_window']})")
-    print(f"   Horizons: {manifest['data_stats']['prediction_horizons']}")
+    
+    # Show prediction horizons from metadata if available
+    if 'prediction_horizons' in metadata:
+        print(f"   Horizons: {metadata['prediction_horizons']}")
+    else:
+        print(f"   Horizons: {manifest['data_stats']['prediction_horizons']}")
     
     return manifest
 

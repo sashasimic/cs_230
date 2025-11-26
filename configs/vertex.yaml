@@ -6,7 +6,7 @@ project:
   # GCP_PROJECT_ID from .env is preferred
   # region: us-central1  # GCP_REGION from .env is preferred
   gcs_bucket: inflation-prediction-478715-models
-  image_uri: gcr.io/inflation-prediction-478715/inflation-predictor:latest
+  image_uri: gcr.io/inflation-prediction-478715/model-trainer:latest
 
 # Default job configuration
 defaults:

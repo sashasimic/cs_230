@@ -541,7 +541,7 @@ def train(
         config_path: Path to model config YAML
         dataloaders: Optional pre-loaded DataLoaders (if None, will load from data/processed/)
         scalers: Optional pre-loaded scalers
-        dataset_version: Optional dataset version (e.g., 'v1', 'v9'). If provided, loads from data/datasets/decoder_transformer/{version}/processed/
+        dataset_version: Optional dataset version (e.g., 'v1', 'v9'). Data always loaded from data/processed/ (copied by *_train_local.py or downloaded by train_vertex.py)
         
     Note:
         FinCast configuration is now read from the config YAML file under the 'fincast' section.
@@ -554,18 +554,22 @@ def train(
     if dataloaders is None:
         from torch.utils.data import TensorDataset, DataLoader
         
-        # Determine data path based on dataset_version
-        if dataset_version:
-            model_type = config.get('model', {}).get('type', 'decoder_transformer')
-            data_dir = Path(f'data/datasets/{model_type}/{dataset_version}/processed')
-            print(f"\n📂 Loading data from versioned dataset: {data_dir}")
-        else:
-            data_dir = Path('data/processed')
-            print(f"\n📂 Loading data from default location: {data_dir}")
+        # Always use data/processed/ (unified behavior for local and Vertex AI)
+        # Local: Copied from versioned dataset by *_train_local.py
+        # Vertex AI: Downloaded from GCS by train_vertex.py
+        data_dir = Path('data/processed')
+        print(f"\n📂 Loading data from: {data_dir}...")
         
         # Verify path exists
         if not data_dir.exists():
-            raise FileNotFoundError(f"Data directory not found: {data_dir}")
+            if dataset_version:
+                raise FileNotFoundError(
+                    f"Data directory not found: {data_dir}\n"
+                    f"For local training, run:\n"
+                    f"  python scripts/03_training/decoder_transformer/decoder_transformer_train_local.py --dataset-version {dataset_version}"
+                )
+            else:
+                raise FileNotFoundError(f"Data directory not found: {data_dir}")
         
         # Load preprocessed data directly from .npy files
         train_X_np = np.load(data_dir / 'X_train.npy', allow_pickle=True)
@@ -648,12 +652,8 @@ def train(
     
     # Display date range and sample counts from metadata (actual data)
     try:
-        # Use same path logic as data loading
-        if dataset_version:
-            model_type = config.get('model', {}).get('type', 'decoder_transformer')
-            metadata_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml')
-        else:
-            metadata_path = Path('data/processed/metadata.yaml')
+        # Always use data/processed/metadata.yaml (populated by local copy or Vertex AI download)
+        metadata_path = Path('data/processed/metadata.yaml')
         
         if metadata_path.exists():
             with open(metadata_path, 'r') as f:
@@ -692,12 +692,8 @@ def train(
     
     # Load feature metadata if available
     try:
-        # Use same path logic as data loading
-        if dataset_version:
-            model_type = config.get('model', {}).get('type', 'decoder_transformer')
-            metadata_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml')
-        else:
-            metadata_path = Path('data/processed/metadata.yaml')
+        # Always use data/processed/metadata.yaml (populated by local copy or Vertex AI download)
+        metadata_path = Path('data/processed/metadata.yaml')
         
         if metadata_path.exists():
             with open(metadata_path, 'r') as f:
@@ -715,9 +711,10 @@ def train(
     # Output targets - read from dataset metadata if available, otherwise from config
     horizons_config = None
     if dataset_version:
+        # Read horizons from data/processed/metadata.yaml (populated by local copy or Vertex AI download)
         try:
-            model_type = config.get('model', {}).get('type', 'decoder_transformer')
-            metadata_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml')
+            metadata_path = Path('data/processed/metadata.yaml')
+            
             if metadata_path.exists():
                 with open(metadata_path, 'r') as f:
                     dataset_metadata = yaml.safe_load(f)
@@ -1007,15 +1004,47 @@ def train(
     if writer is not None:
         writer.close()
     
+    # Final evaluation on test set
+    print("\n" + "="*80)
+    print("   Final Test Set Evaluation")
+    print("="*80)
+    
+    # Load best model
+    eval_suffix = "_tf" if use_teacher_forcing_eval else "_ar"
+    checkpoint_path = output_dir / f'decoder_transformer_best{eval_suffix}.pt'
+    checkpoint = torch.load(checkpoint_path, weights_only=False)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    test_loss, test_mae, test_rmse, test_dir_acc, test_per_horizon = evaluate(
+        model, test_loader, criterion, device,
+        use_teacher_forcing=use_teacher_forcing_eval,
+        log_mode=False,
+        horizons=horizons_config
+    )
+    
+    print(f"\n📊 Test Set Results:")
+    print(f"  Test Loss: {test_loss:.6f}")
+    print(f"  Test MAE: {test_mae:.6f}")
+    print(f"  Test RMSE: {test_rmse:.6f}")
+    print(f"  Test Dir Acc (H1): {test_dir_acc * 100:.2f}%")
+    
+    # Log per-horizon test metrics
+    if test_per_horizon:
+        horizon_strs = []
+        for key, value in sorted(test_per_horizon.items()):
+            if 'MAE' in key:
+                horizon_strs.append(f"{key}={value:.6f}")
+        if horizon_strs:
+            print(f"  Per-Horizon MAE: {', '.join(horizon_strs)}")
+    
     print("\n" + "="*80)
     print("   Training Complete")
     print("="*80)
     print(f"  Best validation loss: {best_val_loss:.4f}")
     print(f"  Best validation MAE: {best_val_mae:.4f}")
-    eval_suffix = "_tf" if use_teacher_forcing_eval else "_ar"
     eval_mode_name = "Teacher Forcing" if use_teacher_forcing_eval else "Autoregressive"
     print(f"  Evaluation mode: {eval_mode_name}")
-    print(f"  Model saved: {output_dir / f'decoder_transformer_best{eval_suffix}.pt'}")
+    print(f"  Model saved: {checkpoint_path}")
     if writer is not None and not os.getenv('CLOUD_ML_JOB_ID'):
         print(f"\n📊 View TensorBoard: tensorboard --logdir logs/tensorboard")
     print("="*80)

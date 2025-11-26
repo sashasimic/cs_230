@@ -37,6 +37,57 @@ else:
     print(f"⚠️  No .env file found at: {env_file}")
 
 
+def copy_dataset_to_processed(dataset_version: str, config_path: str):
+    """
+    Copy versioned dataset to data/processed/ directory.
+    Mimics Vertex AI's behavior of downloading to data/processed/.
+    
+    Args:
+        dataset_version: Dataset version (e.g., 'v3')
+        config_path: Path to config file (to get model type)
+    """
+    import shutil
+    
+    # Get model type from config
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    model_type = config.get('model', {}).get('type', 'tft')
+    
+    # Source: versioned dataset directory
+    source_dir = Path(f'data/datasets/{model_type}/{dataset_version}/processed')
+    
+    # Destination: data/processed/
+    dest_dir = Path('data/processed')
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    
+    if not source_dir.exists():
+        raise FileNotFoundError(
+            f"Versioned dataset not found: {source_dir}\n"
+            f"Please generate it first using:\n"
+            f"  python scripts/05_deployment/generate_dataset.py \\\n"
+            f"    --model-type {model_type} \\\n"
+            f"    --version {dataset_version} \\\n"
+            f"    --config {config_path}"
+        )
+    
+    print(f"\n📂 Copying dataset to training location...")
+    print(f"   Source: {source_dir}")
+    print(f"   Destination: {dest_dir}")
+    
+    # Copy all files from source to destination
+    copied_files = []
+    for file in source_dir.glob('*'):
+        if file.is_file():
+            shutil.copy2(file, dest_dir / file.name)
+            copied_files.append(file.name)
+    
+    print(f"   ✅ Copied {len(copied_files)} files:")
+    for fname in sorted(copied_files):
+        print(f"      - {fname}")
+    print(f"\n✅ Dataset ready at: {dest_dir}/")
+    print(f"   (Same as Vertex AI behavior)\n")
+
+
 def load_data(config_path: str, force_refresh: bool = False):
     """
     Load training data from local files or BigQuery.
@@ -107,6 +158,10 @@ def train_model(config_path: str, dataset_version: str = None):
         print(f"Dataset version: {dataset_version}")
     print(f"Output: models/tft/tft_best.pt")
     print()
+    
+    # Copy versioned dataset to data/processed/ (mimics Vertex AI behavior)
+    if dataset_version:
+        copy_dataset_to_processed(dataset_version, config_path)
     
     # Run training
     train_fn(config_path, dataset_version=dataset_version)

@@ -84,7 +84,7 @@ decoder_transformer/v3:
   model_type: decoder_transformer
   version_number: v3
   local_path: data/datasets/decoder_transformer/v3
-  created: '2025-11-24T11:46:08.820234'
+  created: '2025-11-26T16:24:48.793433'
   gcs_base_path: gs://inflation-prediction-478715-models/datasets/decoder_transformer/v3/
   raw_dataset_id: projects/233829279510/locations/us-central1/datasets/1455838607326576640
   processed_dataset_id: N/A
@@ -141,4 +141,13 @@ lstm/v4:
   created: '2025-11-26T15:19:39.274757'
   gcs_base_path: gs://inflation-prediction-478715-models/datasets/lstm/v4/
   raw_dataset_id: projects/233829279510/locations/us-central1/datasets/6001237268738605056
+  processed_dataset_id: N/A
+decoder_transformer/v4:
+  version: decoder_transformer/v4
+  model_type: decoder_transformer
+  version_number: v4
+  local_path: data/datasets/decoder_transformer/v4
+  created: '2025-11-26T16:29:46.083577'
+  gcs_base_path: gs://inflation-prediction-478715-models/datasets/decoder_transformer/v4/
+  raw_dataset_id: projects/233829279510/locations/us-central1/datasets/3389149484863717376
   processed_dataset_id: N/A

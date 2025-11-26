@@ -64,11 +64,11 @@ data:
       - sma_50
       - sma_200
   
-  start_date: '2016-04-01'
+  start_date: '2016-04-01' # ex, 2016-04-01, 2020-05-01
   end_date: '2025-11-13'
   frequency: 'daily'
   lookback_window: 192    # Standardized naming (matches TFT config)
-  prediction_horizons: [4, 8, 16]
+  prediction_horizons: [7, 14, 30]
   
   # Target variable (required by data loader)
   target: 'agriculture_basket_returns'  # Average return of DBA, WEAT, SOYB

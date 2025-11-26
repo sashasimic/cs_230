@@ -112,9 +112,9 @@ model:
   type: 'lstm'
   
   # LSTM architecture
-  hidden_dim: 64        # LSTM hidden dimension
-  num_layers: 2         # Number of LSTM layers
-  dropout: 0.2          # Dropout rate
+  hidden_dim: 96        # LSTM hidden dimension
+  num_layers: 3         # Number of LSTM layers
+  dropout: 0.25          # Dropout rate
   
   # Note: LSTM is forward-only (no bidirectional) to prevent data leakage in forecasting
   

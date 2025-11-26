@@ -588,7 +588,7 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
         config_path: Path to model config YAML
         dataloaders: Optional pre-loaded DataLoaders (if None, will load from data/processed/)
         scalers: Optional pre-loaded scalers
-        dataset_version: Optional dataset version (e.g., 'v1', 'v3'). If provided, loads from data/datasets/tft/{version}/processed/
+        dataset_version: Optional dataset version (e.g., 'v1', 'v3'). Data always loaded from data/processed/ (copied by *_train_local.py or downloaded by train_vertex.py)
     """
     # Load config
     with open(config_path, 'r') as f:
@@ -596,14 +596,19 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     
     # Load data if not provided
     if dataloaders is None:
-        # If dataset_version is specified, load from versioned directory
+        # Always use data/processed/ (unified behavior for local and Vertex AI)
+        # Local: Copied from versioned dataset by *_train_local.py
+        # Vertex AI: Downloaded from GCS by train_vertex.py
         if dataset_version:
-            model_type = config.get('model', {}).get('type', 'tft')
-            data_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed')
-            print(f"\n📂 Loading data from versioned dataset: {data_path}")
+            data_path = Path('data/processed')
+            print(f"\n📂 Loading data from: {data_path}...")
             
             if not data_path.exists():
-                raise FileNotFoundError(f"Data directory not found: {data_path}")
+                raise FileNotFoundError(
+                    f"Data directory not found: {data_path}\n"
+                    f"For local training, run:\n"
+                    f"  python scripts/03_training/tft/tft_train_local.py --dataset-version {dataset_version}"
+                )
             
             # Load preprocessed arrays directly
             import numpy as np
@@ -686,12 +691,8 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     
     # Display date range from metadata (actual data) and sample counts
     try:
-        # Use same path logic as data loading
-        if dataset_version:
-            model_type = config.get('model', {}).get('type', 'tft')
-            metadata_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml')
-        else:
-            metadata_path = Path('data/processed/metadata.yaml')
+        # Always use data/processed/metadata.yaml (populated by local copy or Vertex AI download)
+        metadata_path = Path('data/processed/metadata.yaml')
         
         if metadata_path.exists():
             with open(metadata_path, 'r') as f:
@@ -747,12 +748,8 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     # Load and print actual final features being used
     # Note: Config shows 14 base features, but data has more after pivoting (e.g., close_SPY, close_QQQ)
     try:
-        # Use same path logic as data loading
-        if dataset_version:
-            model_type = config.get('model', {}).get('type', 'tft')
-            metadata_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml')
-        else:
-            metadata_path = Path('data/processed/metadata.yaml')
+        # Always use data/processed/metadata.yaml (populated by local copy or Vertex AI download)
+        metadata_path = Path('data/processed/metadata.yaml')
         
         if metadata_path.exists():
             with open(metadata_path, 'r') as f:
@@ -778,9 +775,10 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     # Output targets - read from dataset metadata if available, otherwise from config
     horizons_config = None
     if dataset_version:
+        # Read horizons from data/processed/metadata.yaml (populated by local copy or Vertex AI download)
         try:
-            model_type = config.get('model', {}).get('type', 'tft')
-            metadata_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml')
+            metadata_path = Path('data/processed/metadata.yaml')
+            
             if metadata_path.exists():
                 with open(metadata_path, 'r') as f:
                     dataset_metadata = yaml.safe_load(f)
@@ -1057,12 +1055,63 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     if writer is not None:
         writer.close()
     
+    # Final evaluation on test set
+    print("\n" + "="*80)
+    print("   Final Test Set Evaluation")
+    print("="*80)
+    
+    # Load best model
+    checkpoint_path = output_dir / 'tft_best.pt'
+    checkpoint = torch.load(checkpoint_path, weights_only=False)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Evaluate on test set
+    model.eval()
+    test_preds = []
+    test_targets = []
+    test_loss = 0.0
+    test_batches = 0
+    
+    print(f"  Evaluating on test set...")
+    with torch.no_grad():
+        for batch_X, batch_y in dataloaders['test']:
+            batch_X = batch_X.to(device)
+            batch_y = batch_y.to(device)
+            
+            predictions = model(batch_X)
+            loss = criterion(predictions, batch_y)
+            
+            test_loss += loss.item()
+            test_batches += 1
+            
+            test_preds.append(predictions)
+            test_targets.append(batch_y)
+    
+    test_loss = test_loss / test_batches
+    test_preds = torch.cat(test_preds, dim=0)
+    test_targets = torch.cat(test_targets, dim=0)
+    test_metrics = compute_metrics(test_preds, test_targets, horizons=horizons_config)
+    
+    print(f"\n📊 Test Set Results:")
+    print(f"  Test Loss: {test_loss:.6f}")
+    print(f"  Test MAE: {test_metrics['mae']:.6f}")
+    print(f"  Test RMSE: {test_metrics['rmse']:.6f}")
+    print(f"  Test Dir Acc (H1): {test_metrics['dir_acc']:.2f}%")
+    
+    # Log per-horizon test metrics
+    horizon_strs = []
+    for key, value in sorted(test_metrics.items()):
+        if 'MAE' in key and key != 'mae':  # Skip overall MAE
+            horizon_strs.append(f"{key}={value:.6f}")
+    if horizon_strs:
+        print(f"  Per-Horizon MAE: {', '.join(horizon_strs)}")
+    
     print("\n" + "="*80)
     print("   Training Complete")
     print("="*80)
     print(f"  Best validation loss: {best_val_loss:.6f}")
     print(f"  Best validation MAE: {best_val_mae:.6f}")
-    print(f"  Model saved: {output_dir / 'tft_best.pt'}")
+    print(f"  Model saved: {checkpoint_path}")
     if writer is not None and not os.getenv('CLOUD_ML_JOB_ID'):
         print(f"\n📊 View TensorBoard: tensorboard --logdir logs/tft")
     print("="*80)

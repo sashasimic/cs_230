@@ -45,7 +45,7 @@ if not PROJECT_ID:
     )
 
 GCS_BUCKET = VERTEX_CONFIG['project'].get('gcs_bucket', f"{PROJECT_ID}-models")
-IMAGE_URI = VERTEX_CONFIG['project'].get('image_uri', f"gcr.io/{PROJECT_ID}/inflation-predictor:latest")
+IMAGE_URI = VERTEX_CONFIG['project'].get('image_uri', f"gcr.io/{PROJECT_ID}/model-trainer:latest")
 
 
 def submit_training_job(

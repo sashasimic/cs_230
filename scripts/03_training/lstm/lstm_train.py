@@ -269,7 +269,7 @@ def train(
         config_path: Path to model config YAML
         dataloaders: Optional pre-loaded DataLoaders (if None, will load from data/processed/)
         scalers: Optional pre-loaded scalers
-        dataset_version: Optional dataset version (e.g., 'v1', 'v3'). If provided, loads from data/datasets/lstm/{version}/processed/
+        dataset_version: Optional dataset version (e.g., 'v1', 'v3'). Data always loaded from data/processed/ (copied by *_train_local.py or downloaded by train_vertex.py)
     """
     # Load configuration
     with open(config_path, 'r') as f:
@@ -292,19 +292,22 @@ def train(
     
     # Load data if not provided
     if dataloaders is None:
-        # Determine data path based on dataset_version
-        if dataset_version:
-            # Get model type from config to construct correct path
-            model_type = config.get('model', {}).get('type', 'lstm')
-            data_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed')
-            print(f"\n📂 Loading data from versioned dataset: {data_path}")
-        else:
-            data_path = Path('data/processed')
-            print(f"\n📂 Loading data from default location: {data_path}")
+        # Always use data/processed/ (unified behavior for local and Vertex AI)
+        # Local: Copied from versioned dataset by *_train_local.py
+        # Vertex AI: Downloaded from GCS by train_vertex.py
+        data_path = Path('data/processed')
+        print(f"\n📂 Loading data from: {data_path}...")
         
         # Verify path exists
         if not data_path.exists():
-            raise FileNotFoundError(f"Data directory not found: {data_path}")
+            if dataset_version:
+                raise FileNotFoundError(
+                    f"Data directory not found: {data_path}\n"
+                    f"For local training, run:\n"
+                    f"  python scripts/03_training/lstm/lstm_train_local.py --dataset-version {dataset_version}"
+                )
+            else:
+                raise FileNotFoundError(f"Data directory not found: {data_path}")
         
         # Load preprocessed arrays
         train_X_np = np.load(data_path / 'X_train.npy', allow_pickle=True)
@@ -381,13 +384,9 @@ def train(
     # Get prediction horizons - read from dataset metadata if available, otherwise from config
     horizons = None
     if dataset_version:
-        # When using versioned dataset, read horizons from its metadata
+        # Read horizons from data/processed/metadata.yaml (populated by local copy or Vertex AI download)
         try:
-            if dataset_version:
-                model_type = config.get('model', {}).get('type', 'lstm')
-                metadata_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml')
-            else:
-                metadata_path = Path('data/processed/metadata.yaml')
+            metadata_path = Path('data/processed/metadata.yaml')
             
             if metadata_path.exists():
                 with open(metadata_path, 'r') as f:
@@ -412,12 +411,8 @@ def train(
     
     # Display date range and sample counts from metadata (actual data)
     try:
-        # Use same path logic as data loading
-        if dataset_version:
-            model_type = config.get('model', {}).get('type', 'lstm')
-            metadata_path = Path(f'data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml')
-        else:
-            metadata_path = Path('data/processed/metadata.yaml')
+        # Always use data/processed/metadata.yaml (populated by local copy or Vertex AI download)
+        metadata_path = Path('data/processed/metadata.yaml')
         
         if metadata_path.exists():
             with open(metadata_path, 'r') as f:
