@@ -66,7 +66,7 @@ decoder_transformer/v1:
   model_type: decoder_transformer
   version_number: v1
   local_path: data/datasets/decoder_transformer/v1
-  created: '2025-11-23T14:14:51.885663'
+  created: '2025-11-25T14:43:51.170745'
   gcs_base_path: gs://inflation-prediction-478715-models/datasets/decoder_transformer/v1/
   raw_dataset_id: projects/233829279510/locations/us-central1/datasets/4656103539410468864
   processed_dataset_id: N/A
@@ -75,7 +75,7 @@ decoder_transformer/v2:
   model_type: decoder_transformer
   version_number: v2
   local_path: data/datasets/decoder_transformer/v2
-  created: '2025-11-23T21:07:52.780193'
+  created: '2025-11-25T14:49:06.896704'
   gcs_base_path: gs://inflation-prediction-478715-models/datasets/decoder_transformer/v2/
   raw_dataset_id: projects/233829279510/locations/us-central1/datasets/6541422933418442752
   processed_dataset_id: N/A
@@ -93,7 +93,34 @@ lstm/v1:
   model_type: lstm
   version_number: v1
   local_path: data/datasets/lstm/v1
-  created: '2025-11-24T17:04:56.177626'
+  created: '2025-11-25T13:26:01.242819'
   gcs_base_path: gs://inflation-prediction-478715-models/datasets/lstm/v1/
   raw_dataset_id: projects/233829279510/locations/us-central1/datasets/6447515844313350144
+  processed_dataset_id: N/A
+tft/v1:
+  version: tft/v1
+  model_type: tft
+  version_number: v1
+  local_path: data/datasets/tft/v1
+  created: '2025-11-25T15:55:31.466427'
+  gcs_base_path: gs://inflation-prediction-478715-models/datasets/tft/v1/
+  raw_dataset_id: projects/233829279510/locations/us-central1/datasets/6392065273901350912
+  processed_dataset_id: N/A
+lstm/v2:
+  version: lstm/v2
+  model_type: lstm
+  version_number: v2
+  local_path: data/datasets/lstm/v2
+  created: '2025-11-25T14:33:19.673204'
+  gcs_base_path: gs://inflation-prediction-478715-models/datasets/lstm/v2/
+  raw_dataset_id: projects/233829279510/locations/us-central1/datasets/3131459143685111808
+  processed_dataset_id: N/A
+tft/v2:
+  version: tft/v2
+  model_type: tft
+  version_number: v2
+  local_path: data/datasets/tft/v2
+  created: '2025-11-25T17:48:44.546384'
+  gcs_base_path: gs://inflation-prediction-478715-models/datasets/tft/v2/
+  raw_dataset_id: projects/233829279510/locations/us-central1/datasets/1469067931231977472
   processed_dataset_id: N/A

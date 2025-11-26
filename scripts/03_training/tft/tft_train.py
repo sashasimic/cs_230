@@ -10,22 +10,208 @@ Shared training function used by both:
 import os
 import sys
 import yaml
+
+# Fix for Mac threading issues - must be set before importing torch
+if sys.platform == 'darwin':  # Mac OS
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
+
+# Set PyTorch to single-threaded mode on Mac
+if sys.platform == 'darwin':
+    torch.set_num_threads(1)
+
+# TensorBoard will be imported locally when needed (Mac compatibility)
+SummaryWriter = None
+TENSORBOARD_AVAILABLE = False
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 
-class SimplifiedTFT(nn.Module):
-    """Simplified Temporal Fusion Transformer for multi-horizon forecasting."""
+class PositionalEncoding(nn.Module):
+    """Sinusoidal positional encoding for transformer (same as decoder transformer)."""
+    
+    def __init__(self, d_model: int, max_len: int = 5000):
+        super().__init__()
+        
+        import math
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
+        
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)  # [1, max_len, d_model]
+        
+        self.register_buffer("pe", pe)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: [batch, seq_len, d_model]
+        Returns:
+            x with positional encoding added
+        """
+        return x + self.pe[:, :x.size(1), :]
+
+
+class GatedResidualNetwork(nn.Module):
+    """Gated Residual Network (GRN) - core TFT building block.
+    
+    Applies non-linear processing with gating and residual connections.
+    """
+    
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, dropout: float = 0.0, context_dim: int = None):
+        super().__init__()
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.context_dim = context_dim
+        self.hidden_dim = hidden_dim
+        
+        # Primary path
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.elu = nn.ELU()
+        
+        # Context path (optional)
+        if context_dim is not None:
+            self.context_fc = nn.Linear(context_dim, hidden_dim, bias=False)
+        
+        # Output path with gating
+        self.fc2 = nn.Linear(hidden_dim, output_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.gate = nn.Linear(hidden_dim, output_dim)
+        self.sigmoid = nn.Sigmoid()
+        
+        # Residual connection (if dimensions match)
+        if input_dim != output_dim:
+            self.skip = nn.Linear(input_dim, output_dim)
+        else:
+            self.skip = None
+        
+        # Layer norm
+        self.layer_norm = nn.LayerNorm(output_dim)
+    
+    def forward(self, x: torch.Tensor, context: torch.Tensor = None):
+        """Forward pass with optional context.
+        
+        Args:
+            x: [batch, ..., input_dim]
+            context: [batch, ..., context_dim] (optional)
+        """
+        # Skip connection
+        if self.skip is not None:
+            residual = self.skip(x)
+        else:
+            residual = x
+        
+        # Primary path
+        hidden = self.elu(self.fc1(x))
+        
+        # Add context if provided
+        if context is not None and self.context_dim is not None:
+            hidden = hidden + self.context_fc(context)
+        
+        # Gated output
+        gate = self.sigmoid(self.gate(hidden))
+        output = self.fc2(self.dropout(hidden))
+        output = gate * output
+        
+        # Add residual and normalize
+        output = self.layer_norm(output + residual)
+        
+        return output
+
+
+class VariableSelectionNetwork(nn.Module):
+    """Variable Selection Network (VSN) - learns which features are important."""
+    
+    def __init__(self, input_dim: int, num_vars: int, hidden_dim: int, dropout: float = 0.0, context_dim: int = None):
+        super().__init__()
+        self.input_dim = input_dim
+        self.num_vars = num_vars
+        self.hidden_dim = hidden_dim
+        
+        # Individual variable GRNs
+        self.variable_grns = nn.ModuleList([
+            GatedResidualNetwork(input_dim, hidden_dim, hidden_dim, dropout, context_dim)
+            for _ in range(num_vars)
+        ])
+        
+        # Variable selection weights
+        flattened_dim = num_vars * hidden_dim
+        self.selection_grn = GatedResidualNetwork(
+            flattened_dim, hidden_dim, num_vars, dropout, context_dim
+        )
+        self.softmax = nn.Softmax(dim=-1)
+    
+    def forward(self, variables: torch.Tensor, context: torch.Tensor = None):
+        """Select important variables.
+        
+        Args:
+            variables: [batch, time, num_vars, input_dim] or [batch, num_vars, input_dim]
+            context: Optional context [batch, time, context_dim] or [batch, context_dim]
+        
+        Returns:
+            selected: Weighted combination of variables
+            weights: Variable importance weights
+        """
+        # Handle both 3D and 4D inputs
+        is_temporal = len(variables.shape) == 4
+        
+        if is_temporal:
+            batch, time, num_vars, _ = variables.shape
+            # Flatten time dimension
+            variables = variables.reshape(batch * time, num_vars, -1)
+            if context is not None:
+                context = context.reshape(batch * time, -1)
+        else:
+            batch, num_vars, _ = variables.shape
+        
+        # Process each variable
+        processed_vars = []
+        for i in range(num_vars):
+            processed = self.variable_grns[i](variables[:, i], context)
+            processed_vars.append(processed)
+        
+        # Stack: [batch, num_vars, hidden_dim]
+        processed_vars = torch.stack(processed_vars, dim=1)
+        
+        # Flatten for selection
+        flattened = processed_vars.reshape(variables.shape[0], -1)
+        
+        # Compute selection weights
+        weights = self.selection_grn(flattened, context)
+        weights = self.softmax(weights)  # [batch, num_vars]
+        
+        # Apply weights
+        weights = weights.unsqueeze(-1)  # [batch, num_vars, 1]
+        selected = (processed_vars * weights).sum(dim=1)  # [batch, hidden_dim]
+        
+        # Reshape back if temporal
+        if is_temporal:
+            selected = selected.reshape(batch, time, -1)
+            weights = weights.reshape(batch, time, num_vars, 1)
+        
+        return selected, weights
+
+
+class TemporalFusionTransformer(nn.Module):
+    """Full Temporal Fusion Transformer implementation.
+    
+    Based on: "Temporal Fusion Transformers for Interpretable Multi-horizon Time Series Forecasting"
+    https://arxiv.org/abs/1912.09363
+    """
     
     def __init__(self, config: dict, num_features: int = None):
         super().__init__()
@@ -33,95 +219,183 @@ class SimplifiedTFT(nn.Module):
         # Extract config
         time_varying_known = config['model'].get('time_varying_known', [])
         time_varying_unknown = config['model']['time_varying_unknown']
+        static_features = config['model'].get('static_features', [])
+        
         # Use actual feature count from data if provided (accounts for pivoting)
-        # Otherwise fallback to config count (for backward compatibility)
         if num_features is not None:
             self.num_features = num_features
         else:
             self.num_features = len(time_varying_known) + len(time_varying_unknown)
+        
         self.hidden_size = config['model']['hidden_size']
         self.lstm_layers = config['model']['lstm_layers']
         self.attention_heads = config['model']['attention_heads']
         self.dropout = config['model']['dropout']
         self.num_horizons = len(config['data']['prediction_horizons'])
+        self.quantiles = config['model'].get('quantiles', [0.5])
+        self.num_quantiles = len(self.quantiles)
         
-        # Input projection
-        self.input_projection = nn.Linear(self.num_features, self.hidden_size)
+        # For simplicity, treat all features as time-varying unknown
+        # In production, you'd separate known vs unknown based on config
+        self.num_time_varying = self.num_features
         
-        # LSTM encoder
-        self.lstm = nn.LSTM(
+        print(f"   Initializing TFT with:")
+        print(f"   - {self.num_features} input features")
+        print(f"   - {self.num_horizons} prediction horizons")
+        print(f"   - {self.num_quantiles} quantiles: {self.quantiles}")
+        
+        # ===== 1. Variable Selection Network (VSN) =====
+        # Learns which input features are important
+        self.variable_selection = VariableSelectionNetwork(
+            input_dim=1,  # Each feature is scalar
+            num_vars=self.num_features,
+            hidden_dim=self.hidden_size,
+            dropout=self.dropout
+        )
+        self.vsn_norm = nn.LayerNorm(self.hidden_size)  # Normalize VSN output
+        
+        # ===== 2. LSTM Encoder =====
+        # Processes historical sequence
+        self.lstm_encoder = nn.LSTM(
             input_size=self.hidden_size,
             hidden_size=self.hidden_size,
             num_layers=self.lstm_layers,
             batch_first=True,
             dropout=self.dropout if self.lstm_layers > 1 else 0
         )
+        self.lstm_norm = nn.LayerNorm(self.hidden_size)  # Normalize LSTM output
         
-        # Multi-head attention
-        self.attention = nn.MultiheadAttention(
+        # ===== 3. Static Enrichment (using GRN) =====
+        # Enriches temporal features with static context
+        self.static_enrichment = GatedResidualNetwork(
+            input_dim=self.hidden_size,
+            hidden_dim=self.hidden_size,
+            output_dim=self.hidden_size,
+            dropout=self.dropout
+        )
+        
+        # ===== 4. Temporal Self-Attention =====
+        # Multi-head attention over time (with causal masking for forecasting)
+        self.temporal_attention = nn.MultiheadAttention(
             embed_dim=self.hidden_size,
             num_heads=self.attention_heads,
             dropout=self.dropout,
             batch_first=True
         )
         
-        # Post-attention layer norm and feedforward
-        self.attention_norm = nn.LayerNorm(self.hidden_size)
-        self.feedforward = nn.Sequential(
-            nn.Linear(self.hidden_size, self.hidden_size * 4),
-            nn.GELU(),
-            nn.Dropout(self.dropout),
-            nn.Linear(self.hidden_size * 4, self.hidden_size),
-            nn.Dropout(self.dropout)
+        # Register causal mask as buffer (won't be trained)
+        # This prevents attention from looking at future timesteps
+        lookback = config['data'].get('lookback_window', config['data'].get('lookback', 192))
+        self.register_buffer(
+            'causal_mask',
+            self._generate_causal_mask(lookback)
         )
-        self.ff_norm = nn.LayerNorm(self.hidden_size)
         
-        # Output heads for each horizon
-        self.output_heads = nn.ModuleList([
-            nn.Linear(self.hidden_size, 1)
+        # Attention output processing
+        self.attention_gate = nn.Linear(self.hidden_size * 2, self.hidden_size)
+        self.attention_sigmoid = nn.Sigmoid()
+        self.attention_norm = nn.LayerNorm(self.hidden_size)
+        
+        # ===== 5. Position-wise Feed-Forward =====
+        self.position_wise_grn = GatedResidualNetwork(
+            input_dim=self.hidden_size,
+            hidden_dim=self.hidden_size,
+            output_dim=self.hidden_size,
+            dropout=self.dropout
+        )
+        
+        # ===== 6. Quantile Output Heads =====
+        # Separate head for each (horizon, quantile) combination
+        self.quantile_outputs = nn.ModuleList([
+            nn.Linear(self.hidden_size, self.num_quantiles)
             for _ in range(self.num_horizons)
         ])
         
         # Initialize weights
         self._init_weights()
     
+    def _generate_causal_mask(self, size: int) -> torch.Tensor:
+        """Generate causal mask to prevent attention to future positions.
+        
+        Returns:
+            mask: [size, size] with 0 for allowed, -inf for masked
+            [[  0, -inf, -inf],
+             [  0,   0, -inf],
+             [  0,   0,   0]]
+        """
+        mask = torch.triu(torch.ones(size, size), diagonal=1)
+        mask = mask.masked_fill(mask == 1, float('-inf'))
+        return mask
+    
     def forward(self, x: torch.Tensor):
         """
-        Forward pass.
+        TFT Forward pass.
         
         Args:
             x: [batch, lookback, features]
         
         Returns:
-            predictions: [batch, horizons]
+            predictions: [batch, horizons, quantiles] or [batch, horizons] if single quantile
         """
-        # Input projection
-        x = self.input_projection(x)  # [batch, lookback, hidden]
+        batch_size, lookback, num_features = x.shape
         
-        # LSTM encoding
-        lstm_out, _ = self.lstm(x)  # [batch, lookback, hidden]
+        # ===== 1. Variable Selection =====
+        # Reshape to [batch, time, num_vars, 1] for VSN
+        x_reshaped = x.unsqueeze(-1)  # [batch, lookback, features, 1]
         
-        # Multi-head attention
-        attn_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
+        # Apply variable selection to learn feature importance
+        selected_features, var_weights = self.variable_selection(x_reshaped)
+        # selected_features: [batch, lookback, hidden_size]
+        selected_features = self.vsn_norm(selected_features)  # Normalize
         
-        # Residual connection + layer norm
-        x = self.attention_norm(lstm_out + attn_out)
+        # ===== 2. LSTM Encoding =====
+        # Encode the full sequence
+        lstm_output, (hidden, cell) = self.lstm_encoder(selected_features)
+        # lstm_output: [batch, lookback, hidden_size]
+        lstm_output = self.lstm_norm(lstm_output)  # Normalize
+        temporal_features = lstm_output
         
-        # Feedforward + residual
-        ff_out = self.feedforward(x)
-        x = self.ff_norm(x + ff_out)  # [batch, lookback, hidden]
+        # ===== 3. Static Enrichment =====
+        # Apply GRN to enrich features (no actual static features in our case)
+        enriched = self.static_enrichment(temporal_features)
+        # enriched: [batch, lookback, hidden_size]
         
-        # Use last timestep for prediction
-        x = x[:, -1, :]  # [batch, hidden]
+        # ===== 4. Temporal Self-Attention =====
+        # Apply multi-head attention over time with causal masking
+        attn_output, attn_weights = self.temporal_attention(
+            enriched, enriched, enriched,
+            attn_mask=self.causal_mask  # Prevent looking at future
+        )
+        # attn_output: [batch, lookback, hidden_size]
         
-        # Generate predictions for each horizon
-        predictions = []
-        for horizon_head in self.output_heads:
-            horizon_pred = horizon_head(x)  # [batch, 1]
-            predictions.append(horizon_pred)
+        # Gated residual connection
+        gate_input = torch.cat([enriched, attn_output], dim=-1)
+        gate = self.attention_sigmoid(self.attention_gate(gate_input))
+        gated_output = gate * attn_output + (1 - gate) * enriched
+        gated_output = self.attention_norm(gated_output)
         
-        # Stack: [batch, horizons]
-        predictions = torch.cat(predictions, dim=1)
+        # ===== 5. Position-wise Processing =====
+        # Apply GRN to each timestep
+        processed = self.position_wise_grn(gated_output)
+        # processed: [batch, lookback, hidden_size]
+        
+        # ===== 6. Quantile Predictions =====
+        # Use last timestep for multi-horizon forecasting
+        final_repr = processed[:, -1, :]  # [batch, hidden_size]
+        
+        # Generate quantile predictions for each horizon
+        all_predictions = []
+        for horizon_idx in range(self.num_horizons):
+            quantile_preds = self.quantile_outputs[horizon_idx](final_repr)
+            # quantile_preds: [batch, num_quantiles]
+            all_predictions.append(quantile_preds)
+        
+        # Stack: [batch, horizons, quantiles]
+        predictions = torch.stack(all_predictions, dim=1)
+        
+        # If single quantile (median), squeeze last dimension for compatibility
+        if self.num_quantiles == 1:
+            predictions = predictions.squeeze(-1)  # [batch, horizons]
         
         return predictions
     
@@ -157,11 +431,11 @@ def compute_layer_grad_stats(model: nn.Module) -> dict:
             grad_max = param.grad.data.abs().max().item()
             
             # Group by layer type
-            if 'vsn' in name:
+            if 'variable_selection' in name or 'variable_grns' in name:
                 layer_type = 'VSN'
-            elif 'input_projection' in name:
-                layer_type = 'Input'
-            elif 'lstm' in name:
+            elif 'static_enrichment' in name or 'position_wise_grn' in name:
+                layer_type = 'GRN'
+            elif 'lstm_encoder' in name:
                 if 'weight_ih_l0' in name or 'weight_hh_l0' in name or 'bias_ih_l0' in name or 'bias_hh_l0' in name:
                     layer_type = 'LSTM_L0'
                 elif 'weight_ih_l1' in name or 'weight_hh_l1' in name or 'bias_ih_l1' in name or 'bias_hh_l1' in name:
@@ -170,11 +444,9 @@ def compute_layer_grad_stats(model: nn.Module) -> dict:
                     layer_type = 'LSTM_L2'
                 else:
                     layer_type = 'LSTM_Other'
-            elif 'attention' in name:
+            elif 'temporal_attention' in name or 'attention_gate' in name or 'attention_norm' in name:
                 layer_type = 'Attention'
-            elif 'feedforward' in name:
-                layer_type = 'Feedforward'
-            elif 'output_heads' in name:
+            elif 'quantile_outputs' in name:
                 layer_type = 'Output'
             else:
                 layer_type = 'Other'
@@ -230,12 +502,16 @@ def compute_metrics(predictions: torch.Tensor, targets: torch.Tensor) -> Dict[st
         }
 
 
-def train_epoch(model: nn.Module, dataloader, criterion, optimizer, device, epoch: int = 0) -> dict:
-    """Train for one epoch and return detailed metrics."""
+def train_epoch(model: nn.Module, dataloader, criterion, optimizer, device, epoch: int = 0, clip_norm: float = 1.0) -> dict:
+    """Train for one epoch and return detailed metrics (matches decoder transformer)."""
     model.train()
-    total_loss = 0
-    grad_norms = []
+    total_loss = 0.0
+    unclipped_grad_norms = []
+    clipped_grad_norms = []
     layer_grad_stats = None
+    
+    total_batches = len(dataloader)
+    print(f"\n  Training: 0/{total_batches} batches", end='', flush=True)
     
     for batch_idx, (batch_X, batch_y) in enumerate(dataloader):
         batch_X = batch_X.to(device)
@@ -246,12 +522,16 @@ def train_epoch(model: nn.Module, dataloader, criterion, optimizer, device, epoc
         loss = criterion(predictions, batch_y)
         loss.backward()
         
-        # Track gradients before clipping
-        grad_norm = compute_grad_norm(model)
-        grad_norms.append(grad_norm)
+        # Compute unclipped gradient norm
+        unclipped_norm = compute_grad_norm(model)
+        unclipped_grad_norms.append(unclipped_norm)
         
-        # Clip gradients to prevent explosion/vanishing
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        # Apply gradient clipping
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
+        
+        # Compute clipped gradient norm
+        clipped_norm = compute_grad_norm(model)
+        clipped_grad_norms.append(clipped_norm)
         
         # Get detailed layer stats for first batch only (after clipping)
         if batch_idx == 0:
@@ -259,12 +539,28 @@ def train_epoch(model: nn.Module, dataloader, criterion, optimizer, device, epoc
         
         optimizer.step()
         total_loss += loss.item()
+        
+        # Progress update every 10 batches or at end
+        if (batch_idx + 1) % 10 == 0 or (batch_idx + 1) == total_batches:
+            print(f"\r  Training: {batch_idx + 1}/{total_batches} batches (loss: {total_loss / (batch_idx + 1):.4f})", end='', flush=True)
+    
+    print()  # New line after progress
+    avg_loss = total_loss / len(dataloader)
+    
+    # Unclipped stats
+    avg_unclipped = float(np.mean(unclipped_grad_norms))
+    max_unclipped = float(np.max(unclipped_grad_norms))
+    
+    # Clipped stats
+    avg_clipped = float(np.mean(clipped_grad_norms))
+    max_clipped = float(np.max(clipped_grad_norms))
     
     return {
-        'loss': total_loss / len(dataloader),
-        'avg_grad_norm': np.mean(grad_norms),
-        'max_grad_norm': np.max(grad_norms),
-        'min_grad_norm': np.min(grad_norms),
+        'loss': avg_loss,
+        'avg_unclipped': avg_unclipped,
+        'max_unclipped': max_unclipped,
+        'avg_clipped': avg_clipped,
+        'max_clipped': max_clipped,
         'layer_grad_stats': layer_grad_stats
     }
 
@@ -313,6 +609,44 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     print(f"  Lookback window: {lookback} timesteps")
     print(f"  Number of features: {num_features}")
     print(f"  Prediction horizons: {num_horizons}")
+    
+    # Display date range from metadata (actual data) and sample counts
+    try:
+        metadata_path = Path('data/processed/metadata.yaml')
+        if metadata_path.exists():
+            with open(metadata_path, 'r') as f:
+                metadata = yaml.safe_load(f)
+                start_date = metadata.get('start_date', 'N/A')
+                end_date = metadata.get('end_date', 'N/A')
+                print(f"\n📅 Date Range (from actual data):")
+                print(f"  Start: {start_date}")
+                print(f"  End: {end_date}")
+        else:
+            # Fallback to config if metadata doesn't exist
+            if 'data' in config:
+                data_cfg = config['data']
+                start_date = data_cfg.get('start_date', 'N/A')
+                end_date = data_cfg.get('end_date', 'N/A')
+                print(f"\n📅 Date Range (from config):")
+                print(f"  Start: {start_date}")
+                print(f"  End: {end_date}")
+    except Exception as e:
+        print(f"\n⚠️  Could not load date range from metadata: {e}")
+        # Fallback to config
+        if 'data' in config:
+            data_cfg = config['data']
+            start_date = data_cfg.get('start_date', 'N/A')
+            end_date = data_cfg.get('end_date', 'N/A')
+            print(f"\n📅 Date Range (from config):")
+            print(f"  Start: {start_date}")
+            print(f"  End: {end_date}")
+    
+    # Get sample counts from data loaders
+    train_samples = len(dataloaders['train'].dataset)
+    val_samples = len(dataloaders['val'].dataset)
+    test_samples = len(dataloaders['test'].dataset)
+    total = train_samples + val_samples + test_samples
+    print(f"  Total sequences: {total:,} (train: {train_samples:,}, val: {val_samples:,}, test: {test_samples:,})")
     
     # Load and display feature metadata
     time_varying_known = config['model'].get('time_varying_known', [])
@@ -376,10 +710,14 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     print("\n" + "="*80)
     print("   Model Configuration")
     print("="*80)
-    print(f"\nArchitecture: Temporal Fusion Transformer")
+    print(f"\nArchitecture: Temporal Fusion Transformer (TFT)")
+    print(f"  Components:")
+    print(f"    - Variable Selection Network (VSN)")
+    print(f"    - LSTM Encoder ({model_config['lstm_layers']} layers)")
+    print(f"    - Gated Residual Networks (GRN)")
+    print(f"    - Temporal Self-Attention ({model_config['attention_heads']} heads)")
+    print(f"    - Quantile Output Heads")
     print(f"  Hidden size: {model_config['hidden_size']}")
-    print(f"  LSTM layers: {model_config['lstm_layers']}")
-    print(f"  Attention heads: {model_config['attention_heads']}")
     print(f"  Dropout: {model_config['dropout']}")
     print(f"\nTraining:")
     print(f"  Epochs: {training_config['epochs']}")
@@ -387,35 +725,44 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     print(f"  Learning rate: {training_config['learning_rate']}")
     print(f"  Early stopping patience: {training_config['early_stopping']['patience']}")
     
-    # Setup TensorBoard
+    # Setup TensorBoard (import only when needed for Mac compatibility)
     writer = None
     if config.get('logging', {}).get('tensorboard', False):
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        
-        # Check for Vertex AI TensorBoard directory (set automatically by Vertex AI)
-        tensorboard_log_dir = os.getenv('AIP_TENSORBOARD_LOG_DIR')
-        
-        if tensorboard_log_dir:
-            # Vertex AI managed TensorBoard - logs auto-sync
-            log_dir = tensorboard_log_dir
-            writer = SummaryWriter(str(log_dir))
-            print(f"\n📊 TensorBoard (Vertex AI): {log_dir}")
-            print(f"   Logs will auto-sync to TensorBoard instance")
-        else:
-            # Local or manual TensorBoard - use local paths
-            log_dir = Path(config.get('logging', {}).get('log_dir', 'logs/tensorboard')) / timestamp
-            log_dir.mkdir(parents=True, exist_ok=True)
-            writer = SummaryWriter(str(log_dir))
-            print(f"\n📊 TensorBoard logs → {log_dir}")
-            print(f"   View with: tensorboard --logdir {log_dir.parent}")
+        try:
+            # Import TensorBoard only when needed
+            from torch.utils.tensorboard import SummaryWriter
+            
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            
+            # Check for Vertex AI TensorBoard directory (set automatically by Vertex AI)
+            tensorboard_log_dir = os.getenv('AIP_TENSORBOARD_LOG_DIR')
+            
+            if tensorboard_log_dir:
+                # Vertex AI managed TensorBoard - logs auto-sync
+                log_dir = tensorboard_log_dir
+                writer = SummaryWriter(str(log_dir))
+                print(f"\n📊 TensorBoard (Vertex AI): {log_dir}")
+                print(f"   Logs will auto-sync to TensorBoard instance")
+            else:
+                # Local or manual TensorBoard - use local paths
+                log_dir = Path(config.get('logging', {}).get('log_dir', 'logs/tensorboard')) / timestamp
+                log_dir.mkdir(parents=True, exist_ok=True)
+                writer = SummaryWriter(str(log_dir))
+                print(f"\n📊 TensorBoard logs → {log_dir}")
+                print(f"   View with: tensorboard --logdir {log_dir.parent}")
+        except Exception as e:
+            print(f"\n⚠️  TensorBoard setup failed: {type(e).__name__}")
+            print(f"   Error: {e}")
+            print("   Training will continue without TensorBoard logging")
+            writer = None
     
     # Initialize TFT model
     print("\n" + "="*80)
-    print("   Initializing TFT Model")
+    print("   Initializing Temporal Fusion Transformer")
     print("="*80)
     
     # Pass actual feature count from data (after pivoting)
-    model = SimplifiedTFT(config, num_features=num_features).to(device)
+    model = TemporalFusionTransformer(config, num_features=num_features).to(device)
     
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
@@ -431,6 +778,24 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     )
     criterion = nn.MSELoss()
     
+    # Setup learning rate scheduler (if enabled)
+    scheduler = None
+    if training_config.get('lr_scheduler', {}).get('enabled', False):
+        scheduler_config = training_config['lr_scheduler']
+        if scheduler_config['type'] == 'reduce_on_plateau':
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode='min',
+                factor=scheduler_config.get('factor', 0.5),
+                patience=scheduler_config.get('patience', 5),
+                min_lr=scheduler_config.get('min_lr', 0.00001)
+            )
+            print(f"\n📉 Learning Rate Scheduler: ReduceLROnPlateau")
+            print(f"   Mode: min (reduce on validation loss plateau)")
+            print(f"   Factor: {scheduler_config.get('factor', 0.5)}")
+            print(f"   Patience: {scheduler_config.get('patience', 5)}")
+            print(f"   Min LR: {scheduler_config.get('min_lr', 0.00001)}")
+    
     # Create output directory
     output_dir = Path('models/tft')
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -443,14 +808,32 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     best_val_loss = float('inf')
     best_val_mae = float('inf')
     patience_counter = 0
+    clip_norm = training_config.get('gradient_clip_norm', 1.0)
+    
+    print(f"\n⏱️  Starting training for {training_config['epochs']} epochs...")
+    print(f"   Device: {device}")
+    print(f"   Batch size: {training_config['batch_size']}")
+    print(f"   Learning rate: {training_config['learning_rate']}")
+    print(f"   Gradient clipping: {clip_norm}")
+    print(f"   Training on {len(dataloaders['train'])} batches per epoch\n")
+    print("="*80)
+    
+    import time
+    training_start_time = time.time()
     
     for epoch in range(training_config['epochs']):
+        epoch_start_time = time.time()
+        
         # Training phase
-        train_results = train_epoch(model, dataloaders['train'], criterion, optimizer, device, epoch=epoch+1)
+        train_results = train_epoch(
+            model, dataloaders['train'], criterion, optimizer, device, 
+            epoch=epoch+1, clip_norm=clip_norm
+        )
         train_loss = train_results['loss']
-        avg_grad_norm = train_results['avg_grad_norm']
-        max_grad_norm = train_results['max_grad_norm']
-        min_grad_norm = train_results['min_grad_norm']
+        avg_unclipped = train_results['avg_unclipped']
+        max_unclipped = train_results['max_unclipped']
+        avg_clipped = train_results['avg_clipped']
+        max_clipped = train_results['max_clipped']
         layer_grad_stats = train_results['layer_grad_stats']
         
         # Validation phase
@@ -460,8 +843,11 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
         all_preds = []
         all_targets = []
         
+        total_val_batches = len(dataloaders['val'])
+        print(f"  Validation: 0/{total_val_batches} batches", end='', flush=True)
+        
         with torch.no_grad():
-            for batch_X, batch_y in dataloaders['val']:
+            for batch_idx, (batch_X, batch_y) in enumerate(dataloaders['val']):
                 batch_X = batch_X.to(device)
                 batch_y = batch_y.to(device)
                 
@@ -474,6 +860,7 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
                 all_preds.append(predictions)
                 all_targets.append(batch_y)
         
+        print()  # New line after validation progress
         val_loss = val_loss / val_batches
         
         # Compute metrics
@@ -481,15 +868,18 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
         all_targets = torch.cat(all_targets, dim=0)
         metrics = compute_metrics(all_preds, all_targets)
         
-        print(f"\n{'='*80}")
-        print(f"Epoch {epoch+1}/{training_config['epochs']}")
-        print(f"  Train Loss: {train_loss:.4f}")
-        print(f"  Val Loss: {val_loss:.4f}, MAE: {metrics['mae']:.4f}, RMSE: {metrics['rmse']:.4f}")
-        print(f"  Dir Acc: {metrics['dir_acc']:.2f}%")
-        print(f"  Grad Norm: avg={avg_grad_norm:.4f}, max={max_grad_norm:.4f}, min={min_grad_norm:.4f}")
+        epoch_time = time.time() - epoch_start_time
+        total_elapsed = time.time() - training_start_time
         
-        # Print layer-wise gradient stats
-        if layer_grad_stats:
+        print(f"\nEpoch {epoch+1}/{training_config['epochs']} - {epoch_time/60:.1f} min (total: {total_elapsed/60:.1f} min)")
+        print(f"  Train Loss: {train_loss:.6f}")
+        print(f"  Val   Loss: {val_loss:.6f}, MAE: {metrics['mae']:.6f}, RMSE: {metrics['rmse']:.6f}")
+        print(f"  Dir Acc (H1): {metrics['dir_acc']:.2f}%")
+        print(f"  Grad Norm (unclipped): avg={avg_unclipped:.4f}, max={max_unclipped:.4f}")
+        print(f"  Grad Norm (clipped):   avg={avg_clipped:.4f}, max={max_clipped:.4f}")
+        
+        # Print layer-wise gradient stats every 10 epochs
+        if (epoch + 1) % 10 == 0 and layer_grad_stats:
             print(f"  Layer Gradients (batch 1):")
             for layer_name in ['VSN', 'Input', 'LSTM_L0', 'LSTM_L1', 'LSTM_L2', 'Attention', 'Feedforward', 'Output']:
                 if layer_name in layer_grad_stats:
@@ -498,12 +888,21 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
         
         # Log to TensorBoard
         if writer is not None:
+            current_lr = optimizer.param_groups[0]['lr']
             writer.add_scalar('Loss/train', train_loss, epoch)
             writer.add_scalar('Loss/val', val_loss, epoch)
             writer.add_scalar('Metrics/MAE', metrics['mae'], epoch)
             writer.add_scalar('Metrics/RMSE', metrics['rmse'], epoch)
             writer.add_scalar('Metrics/DirectionalAccuracy', metrics['dir_acc'], epoch)
-            writer.add_scalar('LR', training_config['learning_rate'], epoch)
+            writer.add_scalar('Gradients/Unclipped_Avg', avg_unclipped, epoch)
+            writer.add_scalar('Gradients/Clipped_Avg', avg_clipped, epoch)
+            writer.add_scalar('LR', current_lr, epoch)
+        
+        # Learning rate scheduler step (if enabled)
+        if scheduler is not None:
+            scheduler.step(val_loss)
+        
+        print("")  # Empty line before next epoch
         
         # Early stopping check
         if val_loss < best_val_loss:
@@ -538,12 +937,14 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     print("\n" + "="*80)
     print("   Training Complete")
     print("="*80)
-    print(f"  Best validation loss: {best_val_loss:.4f}")
-    print(f"  Best validation MAE: {best_val_mae:.4f}")
+    print(f"  Best validation loss: {best_val_loss:.6f}")
+    print(f"  Best validation MAE: {best_val_mae:.6f}")
     print(f"  Model saved: {output_dir / 'tft_best.pt'}")
     if writer is not None and not os.getenv('CLOUD_ML_JOB_ID'):
-        print(f"\n📊 View TensorBoard: tensorboard --logdir logs/tensorboard")
+        print(f"\n📊 View TensorBoard: tensorboard --logdir logs/tft")
     print("="*80)
+    
+    return model, best_val_loss
 
 
 if __name__ == '__main__':

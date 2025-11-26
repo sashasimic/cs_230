@@ -717,9 +717,16 @@ class MultiTickerDataLoader:
         print(f"       Contains: {len(self.scalers)} feature scalers + target scaler")
         print()
         
+        # Extract date range from timestamps
+        all_timestamps = np.concatenate([splits['train'][2], splits['val'][2], splits['test'][2]])
+        start_date = pd.Timestamp(all_timestamps.min()).strftime('%Y-%m-%d')
+        end_date = pd.Timestamp(all_timestamps.max()).strftime('%Y-%m-%d')
+        
         # Save metadata
         metadata = {
             'created_at': datetime.now().isoformat(),
+            'start_date': start_date,  # Earliest timestamp in dataset
+            'end_date': end_date,      # Latest timestamp in dataset
             'tickers': self.tickers,  # List of ticker symbols
             'frequency': self.frequency,
             'lookback_window': self.lookback,

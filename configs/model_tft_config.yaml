@@ -57,7 +57,7 @@ data:
     - DBC      # Broad Commodities Index - Core inflation driver
     - USO      # Crude Oil - Energy cost inflation
     - GLD      # Gold - Inflation hedge, policy distrust indicator
-    - CPER     # Copper - Industrial demand proxy
+    # - CPER     # Copper - Industrial demand proxy
     
     # ========================================
     # F. AGRICULTURE (Target & Feature)
@@ -142,7 +142,7 @@ data:
   # GENERAL DATA CONFIGURATION
   # ============================================================
   # Date range for training data
-  start_date: '2020-05-01'  # Reduced range to manage memory usage
+  start_date: '2016-04-01'  # Reduced range to manage memory usage
   end_date: '2025-11-13'    # Future date for ongoing data collection/test split
   train_ratio: 0.7
   val_ratio: 0.15
@@ -174,7 +174,7 @@ model:
   hidden_size: 128              # Hidden layer dimension
   lstm_layers: 3               # Number of LSTM layers
   attention_heads: 8           # Multi-head attention
-  dropout: 0.2  # Increased from 0.15 to help with overfitting
+  dropout: 0.3  # Increased from 0.2 to combat overfitting (train=0.38, val=0.84)
   
   # Quantile prediction
   quantiles: [0.5]            # Start with median only (reduce to regression task)
@@ -217,12 +217,12 @@ model:
 # Training Configuration
 training:
   # Optimization
-  batch_size: 64
+  batch_size: 32  # Reduced from 64 for CPU memory constraints (TFT has 8.65M params)
   epochs: 100  # Quick run: reduced from 100
-  learning_rate: 0.0001  # Reduced from 0.003 to prevent gradient instability
+  learning_rate: 0.0001  # 2x decoder (0.00005) - TFT has 8x params but needs learning
   optimizer: 'adam'
-  weight_decay: 0.01  # L2 regularization to prevent overfitting
-  gradient_clip_norm: 1.0  # Clip gradients to prevent explosion
+  weight_decay: 0.02  # Match decoder transformer exactly
+  gradient_clip_norm: 1.5  # Slightly higher than decoder (1.0) due to VSN complexity
   
   # Directional loss (for trading alignment)
   use_directional_loss: false # Disable initially (focus on main regression)
@@ -239,7 +239,7 @@ training:
   # Early stopping
   early_stopping:
     enabled: true
-    patience: 5  # Quick run: reduced from 10
+    patience: 15  # Match decoder transformer and LSTM (was 5, too short)
     monitor: 'val_loss'
     mode: 'min'
   
@@ -288,23 +288,24 @@ inference:
 
 # BigQuery Configuration
 bigquery:
-  project_id: null  # Set via environment variable GCP_PROJECT_ID
+  project_id: inflation-prediction-478715  # Aligned with decoder_transformer
   dataset_id: 'raw_dataset'
   
   # Ticker data tables
   ticker:
-    raw_table: 'raw_ohlcv'           # Template: raw_ohlcv_{ticker}_{frequency}
+    raw_table: 'raw_ohlcv'  # Template: raw_ohlcv_{ticker}_{frequency}
     synthetic_table: 'synthetic_indicators'  # Template: synthetic_indicators_{ticker}_{frequency}
   
   # GDELT sentiment table
   gdelt:
-    table: 'gdelt_sentiment'         # 15-minute aggregated sentiment
+    table: 'gdelt_sentiment'
+    frequency: '1d'
 
 # Logging and Monitoring
 logging:
   log_level: 'INFO'
   log_dir: 'logs/tft'
-  tensorboard: true
+  tensorboard: true  # Enable for Vertex AI integration
   mlflow: false
   
   # Experiment tracking

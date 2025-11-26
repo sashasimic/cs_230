@@ -142,31 +142,34 @@ def submit_training_job(
     if dataset_version:
         labels['dataset_version'] = dataset_version.lower().replace('/', '-').replace('_', '-')
     
-    # Try to extract date range from model config
+    # Try to extract date range from dataset metadata (source of truth)
     try:
-        # Map model_type to config file
-        config_map = {
-            'tft': 'configs/model_tft_config.yaml',
-            'lstm': 'configs/model_lstm_config.yaml',
-            'decoder_transformer': 'configs/model_decoder_config.yaml',
-        }
-        config_path = config_map.get(model_type)
+        # Parse dataset version to find metadata file
+        # dataset_version can be "v1" or "model_type/v1"
+        if '/' in dataset_version:
+            # Already has model_type prefix
+            dataset_path = f"data/datasets/{dataset_version}/processed/metadata.yaml"
+        else:
+            # Add model_type prefix
+            dataset_path = f"data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml"
         
-        if config_path and Path(config_path).exists():
-            with open(config_path, 'r') as f:
-                model_config = yaml.safe_load(f)
+        if Path(dataset_path).exists():
+            with open(dataset_path, 'r') as f:
+                dataset_metadata = yaml.safe_load(f)
             
-            start_date = model_config.get('data', {}).get('start_date', '')
-            end_date = model_config.get('data', {}).get('end_date', '')
+            start_date = dataset_metadata.get('start_date', '')
+            end_date = dataset_metadata.get('end_date', '')
             
             if start_date:
                 # GCP labels: lowercase, alphanumeric, hyphens, underscores only
                 labels['start_date'] = start_date.replace('/', '-')
             if end_date:
                 labels['end_date'] = end_date.replace('/', '-')
+        else:
+            print(f"   ⚠️  Dataset metadata not found: {dataset_path}")
     except Exception as e:
         # Non-critical, continue without date labels
-        print(f"   ⚠️  Could not extract date range: {e}")
+        print(f"   ⚠️  Could not extract date range from dataset: {e}")
     
     print(f"\n🏷️  Adding labels for identification:")
     for key, value in labels.items():

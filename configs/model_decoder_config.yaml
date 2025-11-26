@@ -64,7 +64,7 @@ data:
       - sma_50
       - sma_200
   
-  start_date: '2020-05-01'
+  start_date: '2016-04-01'
   end_date: '2025-11-13'
   frequency: 'daily'
   lookback_window: 192    # Standardized naming (matches TFT config)
@@ -106,7 +106,7 @@ data:
 
 # FinCast Foundation Model Configuration
 fincast:
-  enabled: true                                           # Enable FinCast backbone for price features
+  enabled: false                                           # Enable FinCast backbone for price features
   checkpoint_path: 'external/fincast/checkpoints/v1.pth'  # Path to pre-trained weights (3.97 GB)
   
   # FFM Architecture (fixed by pre-trained model - do not change)

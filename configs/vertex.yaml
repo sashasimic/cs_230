@@ -11,7 +11,7 @@ project:
 # Default job configuration
 defaults:
   model_type: decoder_transformer
-  dataset_version: v3
+  # dataset_version: Must be specified via --dataset-version flag
   use_spot: false  # Spot instances (60-90% discount, but can be preempted)
   enable_tensorboard: true
 
@@ -72,44 +72,70 @@ jobs:
     profile: cpu
     job_name: decoder-test-cpu
     model_type: decoder_transformer
-    dataset_version: v3
+  
+  # Decoder Transformer (no FinCast) on CPU
+  decoder-cpu:
+    profile: cpu
+    job_name: decoder-nofincast-cpu
+    model_type: decoder_transformer
+  
+  # Decoder Transformer (no FinCast) on GPU
+  decoder-gpu:
+    profile: gpu-t4
+    job_name: decoder-nofincast-gpu
+    model_type: decoder_transformer
   
   # FinCast on CPU (testing)
   fincast-cpu:
     profile: cpu-large
     job_name: decoder-fincast-cpu
     model_type: decoder_transformer
-    dataset_version: v3
   
   # FinCast on GPU (production)
   fincast-gpu:
     profile: gpu-t4
     job_name: decoder-fincast-gpu
     model_type: decoder_transformer
-    dataset_version: v3
   
   # Hyperparameter tuning
   fincast-hptune:
     profile: gpu-t4
     job_name: decoder-fincast-hptune
     model_type: decoder_transformer
-    dataset_version: v3
     max_trials: 20
     parallel_trials: 5
   
   # LSTM baseline on CPU
   lstm-cpu:
     profile: cpu
-    job_name: lstm-baseline-cpu
+    job_name: lstm-eval1-cpu
     model_type: lstm
-    dataset_version: v1
   
   # LSTM baseline on GPU
   lstm-gpu:
     profile: gpu-t4
     job_name: lstm-baseline-gpu
     model_type: lstm
-    dataset_version: v1
+  
+  # TFT (Temporal Fusion Transformer) on CPU
+  tft-cpu:
+    profile: cpu-large  # Changed from 'cpu' - TFT needs more RAM (8.65M params)
+    job_name: tft-cpu
+    model_type: tft
+  
+  # TFT on GPU (recommended)
+  tft-gpu:
+    profile: gpu-t4
+    job_name: tft-gpu
+    model_type: tft
+  
+  # TFT hyperparameter tuning
+  tft-hptune:
+    profile: gpu-t4
+    job_name: tft-hptune
+    model_type: tft
+    max_trials: 20
+    parallel_trials: 4
 
 # Hyperparameters (optional overrides for specific jobs)
 hyperparameters:

@@ -344,29 +344,43 @@ def train(
     print(f"  Number of features: {num_features}")
     print(f"  Prediction horizons: {num_horizons}")
     
-    # Display date range from config
-    if 'data' in config:
-        data_cfg = config['data']
-        start_date = data_cfg.get('start_date', 'N/A')
-        end_date = data_cfg.get('end_date', 'N/A')
-        print(f"\n📅 Date Range:")
-        print(f"  Start: {start_date}")
-        print(f"  End: {end_date}")
-        
-        # Try to get total samples from metadata
-        try:
-            metadata_path = Path('data/processed/metadata.yaml')
-            if metadata_path.exists():
-                with open(metadata_path, 'r') as f:
-                    metadata = yaml.safe_load(f)
-                    train_samples = metadata.get('train_samples', 0)
-                    val_samples = metadata.get('val_samples', 0)
-                    test_samples = metadata.get('test_samples', 0)
-                    total = train_samples + val_samples + test_samples
-                    if total > 0:
-                        print(f"  Total sequences: {total:,} (train: {train_samples}, val: {val_samples}, test: {test_samples})")
-        except:
-            pass
+    # Display date range and sample counts from metadata (actual data)
+    try:
+        metadata_path = Path('data/processed/metadata.yaml')
+        if metadata_path.exists():
+            with open(metadata_path, 'r') as f:
+                metadata = yaml.safe_load(f)
+                start_date = metadata.get('start_date', 'N/A')
+                end_date = metadata.get('end_date', 'N/A')
+                train_samples = metadata.get('train_samples', 0)
+                val_samples = metadata.get('val_samples', 0)
+                test_samples = metadata.get('test_samples', 0)
+                total = train_samples + val_samples + test_samples
+                
+                print(f"\n📅 Date Range (from actual data):")
+                print(f"  Start: {start_date}")
+                print(f"  End: {end_date}")
+                if total > 0:
+                    print(f"  Total sequences: {total:,} (train: {train_samples}, val: {val_samples}, test: {test_samples})")
+        else:
+            # Fallback to config if metadata doesn't exist
+            if 'data' in config:
+                data_cfg = config['data']
+                start_date = data_cfg.get('start_date', 'N/A')
+                end_date = data_cfg.get('end_date', 'N/A')
+                print(f"\n📅 Date Range (from config):")
+                print(f"  Start: {start_date}")
+                print(f"  End: {end_date}")
+    except Exception as e:
+        print(f"\n⚠️  Could not load date range from metadata: {e}")
+        # Fallback to config
+        if 'data' in config:
+            data_cfg = config['data']
+            start_date = data_cfg.get('start_date', 'N/A')
+            end_date = data_cfg.get('end_date', 'N/A')
+            print(f"\n📅 Date Range (from config):")
+            print(f"  Start: {start_date}")
+            print(f"  End: {end_date}")
     
     print(f"\n🖥️  Device: {device}")
     
