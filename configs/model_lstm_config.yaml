@@ -116,8 +116,7 @@ model:
   num_layers: 2         # Number of LSTM layers
   dropout: 0.2          # Dropout rate
   
-  lstm:
-    bidirectional: false  # Use bidirectional LSTM (default: false)
+  # Note: LSTM is forward-only (no bidirectional) to prevent data leakage in forecasting
   
   # Feature columns (must match decoder_transformer for consistency)
   time_varying_known:
@@ -139,7 +138,7 @@ model:
 
 training:
   batch_size: 64
-  epochs: 100
+  epochs: 100  # Number of training epochs (configurable)
   learning_rate: 0.001
   weight_decay: 0.01
   gradient_clip_norm: 1.0

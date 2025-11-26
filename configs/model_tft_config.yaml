@@ -218,7 +218,7 @@ model:
 training:
   # Optimization
   batch_size: 32  # Reduced from 64 for CPU memory constraints (TFT has 8.65M params)
-  epochs: 100  # Quick run: reduced from 100
+  epochs: 100  # Number of training epochs (configurable)
   learning_rate: 0.0001  # 2x decoder (0.00005) - TFT has 8x params but needs learning
   optimizer: 'adam'
   weight_decay: 0.02  # Match decoder transformer exactly

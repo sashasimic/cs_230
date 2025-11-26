@@ -817,24 +817,29 @@ def train(
     clip_norm = config['training'].get('gradient_clip_norm', None)
     early_stopping_patience = config['training'].get('early_stopping', {}).get('patience', 10)
     use_teacher_forcing_eval = config['training'].get('eval_teacher_forcing', True)
+    eval_mode = "Teacher Forcing" if use_teacher_forcing_eval else "Pure Autoregressive"
     
-    print(f"\n Starting training for {epochs} epochs...")
+    print("\n" + "="*80)
+    print("   TRAINING CONFIGURATION")
+    print("="*80)
+    print(f"\n🚀 Starting training for {epochs} epochs")
     print(f"   Device: {device}")
     print(f"   Batch size: {config['training']['batch_size']}")
     print(f"   Learning rate: {config['training']['learning_rate']}")
     print(f"   Gradient clipping: {clip_norm}")
-    eval_mode = "Teacher Forcing" if use_teacher_forcing_eval else "Pure Autoregressive"
+    print(f"   Early stopping patience: {early_stopping_patience}")
     print(f"   Evaluation mode: {eval_mode}")
-    print("\n" + "="*80)
     
     # Estimate training time
+    print(f"\n⏱️  Estimated time:")
     if use_fincast:
-        print("\n⏱️  Estimated time per epoch (with FinCast on CPU): 30-60 minutes")
-        print(f"   Total estimated time for {epochs} epochs: {epochs * 0.75:.1f} hours")
+        print(f"   Per epoch (with FinCast on CPU): 30-60 minutes")
+        print(f"   Total ({epochs} epochs): {epochs * 0.75:.1f} hours")
     else:
-        print(f"\n⏱️  Estimated time per epoch: 5-10 minutes")
-        print(f"   Total estimated time for {epochs} epochs: {epochs * 0.125:.1f} hours")
-    print(f"   Training on {len(train_loader)} batches per epoch\n")
+        print(f"   Per epoch: 5-10 minutes")
+        print(f"   Total ({epochs} epochs): {epochs * 0.125:.1f} hours")
+    print(f"   Training batches per epoch: {len(train_loader)}")
+    print("\n" + "="*80)
     
     training_start_time = time.time()
     

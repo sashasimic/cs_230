@@ -40,13 +40,14 @@ class LSTMMultiHorizon(nn.Module):
     - LSTM layers process historical sequence [batch, lookback, features]
     - Dense layers map LSTM output to multiple horizons [batch, num_horizons]
     
+    Note: Uses forward-only LSTM (no bidirectional) to prevent data leakage.
+    
     Args:
         num_features: Input feature dimension
         hidden_dim: LSTM hidden dimension
         num_layers: Number of LSTM layers
         num_horizons: Number of prediction horizons
         dropout: Dropout rate
-        bidirectional: Use bidirectional LSTM
     """
     
     def __init__(
@@ -55,8 +56,7 @@ class LSTMMultiHorizon(nn.Module):
         hidden_dim: int = 64,
         num_layers: int = 2,
         num_horizons: int = 3,
-        dropout: float = 0.2,
-        bidirectional: bool = False
+        dropout: float = 0.2
     ):
         super().__init__()
         
@@ -64,25 +64,22 @@ class LSTMMultiHorizon(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.num_horizons = num_horizons
-        self.bidirectional = bidirectional
-        self.num_directions = 2 if bidirectional else 1
         
-        # LSTM layers
+        # LSTM layers (forward-only for forecasting)
         self.lstm = nn.LSTM(
             input_size=num_features,
             hidden_size=hidden_dim,
             num_layers=num_layers,
             dropout=dropout if num_layers > 1 else 0,
             batch_first=True,
-            bidirectional=bidirectional
+            bidirectional=False  # Never use bidirectional for forecasting!
         )
         
         # Dropout after LSTM
         self.dropout = nn.Dropout(dropout)
         
         # Dense layers for multi-horizon prediction
-        lstm_output_dim = hidden_dim * self.num_directions
-        self.fc1 = nn.Linear(lstm_output_dim, hidden_dim)
+        self.fc1 = nn.Linear(hidden_dim, hidden_dim)
         self.relu = nn.ReLU()
         self.fc2 = nn.Linear(hidden_dim, num_horizons)
         
@@ -94,12 +91,12 @@ class LSTMMultiHorizon(nn.Module):
             predictions: [batch, num_horizons]
         """
         # LSTM forward pass
-        # output: [batch, seq_len, hidden_dim * num_directions]
-        # h_n: [num_layers * num_directions, batch, hidden_dim]
+        # output: [batch, seq_len, hidden_dim]
+        # h_n: [num_layers, batch, hidden_dim]
         lstm_out, (h_n, c_n) = self.lstm(x)
         
         # Use last time step output
-        last_output = lstm_out[:, -1, :]  # [batch, hidden_dim * num_directions]
+        last_output = lstm_out[:, -1, :]  # [batch, hidden_dim]
         
         # Apply dropout
         x = self.dropout(last_output)
@@ -117,7 +114,7 @@ def train_epoch(
     model: nn.Module,
     train_loader: DataLoader,
     optimizer: optim.Optimizer,
-    criterion: nn.Module,
+    lossFun: nn.Module,
     device: torch.device,
     clip_norm: Optional[float] = None
 ) -> Tuple[float, float, float, float, float]:
@@ -142,18 +139,17 @@ def train_epoch(
         # Forward pass
         optimizer.zero_grad()
         predictions = model(X_batch)
-        loss = criterion(predictions, y_batch)
+        loss = lossFun(predictions, y_batch)
         
         # Backward pass
         loss.backward()
         
         # Compute gradient norms before clipping
-        total_norm = 0.0
-        for p in model.parameters():
-            if p.grad is not None:
-                param_norm = p.grad.data.norm(2)
-                total_norm += param_norm.item() ** 2
-        total_norm = total_norm ** 0.5
+        total_norm = torch.sqrt(sum(
+            p.grad.detach().norm(2).item() ** 2
+            for p in model.parameters() if p.grad is not None
+        ))
+
         unclipped_norms.append(total_norm)
         max_unclipped = max(max_unclipped, total_norm)
         
@@ -162,12 +158,11 @@ def train_epoch(
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip_norm)
             
             # Compute gradient norms after clipping
-            total_norm_clipped = 0.0
-            for p in model.parameters():
-                if p.grad is not None:
-                    param_norm = p.grad.data.norm(2)
-                    total_norm_clipped += param_norm.item() ** 2
-            total_norm_clipped = total_norm_clipped ** 0.5
+            total_norm_clipped = torch.sqrt(sum(
+                p.grad.detach().norm(2).item() ** 2
+                for p in model.parameters() if p.grad is not None
+            ))
+            
             clipped_norms.append(total_norm_clipped)
             max_clipped = max(max_clipped, total_norm_clipped)
         else:
@@ -177,7 +172,6 @@ def train_epoch(
         optimizer.step()
         
         total_loss += loss.item()
-        
         # Progress indicator
         if (batch_idx + 1) % max(1, total_batches // 3) == 0 or batch_idx == total_batches - 1:
             print(f"\r  Training: {batch_idx + 1}/{total_batches} batches (loss: {loss.item():.4f})", end='', flush=True)
@@ -193,7 +187,7 @@ def train_epoch(
 def evaluate(
     model: nn.Module,
     val_loader: DataLoader,
-    criterion: nn.Module,
+    lossFun: nn.Module,
     device: torch.device
 ) -> Tuple[float, float, float, float]:
     """Evaluate model on validation set.
@@ -215,7 +209,7 @@ def evaluate(
             y_batch = y_batch.to(device)
             
             predictions = model(X_batch)
-            loss = criterion(predictions, y_batch)
+            loss = lossFun(predictions, y_batch)
             
             total_loss += loss.item()
             all_predictions.append(predictions.cpu().numpy())
@@ -392,13 +386,11 @@ def train(
     hidden_dim = model_cfg['hidden_dim']
     num_layers = model_cfg['num_layers']
     dropout = model_cfg['dropout']
-    bidirectional = model_cfg.get('lstm', {}).get('bidirectional', False)
     
-    print(f"\nArchitecture: LSTM Multi-Horizon")
+    print(f"\nArchitecture: LSTM Multi-Horizon (Forward-Only)")
     print(f"  hidden_dim: {hidden_dim}")
     print(f"  num_layers: {num_layers}")
     print(f"  dropout: {dropout}")
-    print(f"  bidirectional: {bidirectional}")
     
     train_cfg = config['training']
     print(f"\nTraining:")
@@ -413,8 +405,7 @@ def train(
         hidden_dim=hidden_dim,
         num_layers=num_layers,
         num_horizons=num_horizons,
-        dropout=dropout,
-        bidirectional=bidirectional
+        dropout=dropout
     ).to(device)
     
     # Count parameters
@@ -452,14 +443,14 @@ def train(
         print(f"\n📊 TensorBoard disabled (not available)")
     
     # Loss and optimizer
-    criterion = nn.MSELoss()
+    lossFun = nn.MSELoss()
     optimizer = optim.Adam(
         model.parameters(),
         lr=train_cfg['learning_rate'],
         weight_decay=train_cfg.get('weight_decay', 0.0)
     )
     
-    # Training loop
+    # Training loop configuration
     best_val_loss = float('inf')
     best_val_mae = float('inf')
     patience_counter = 0
@@ -467,16 +458,20 @@ def train(
     clip_norm = train_cfg.get('gradient_clip_norm', None)
     early_stopping_patience = train_cfg.get('early_stopping', {}).get('patience', 10)
     
-    print(f"\n Starting training for {epochs} epochs...")
+    print("\n" + "="*80)
+    print("   TRAINING CONFIGURATION")
+    print("="*80)
+    print(f"\n🚀 Starting training for {epochs} epochs")
     print(f"   Device: {device}")
     print(f"   Batch size: {train_cfg['batch_size']}")
     print(f"   Learning rate: {train_cfg['learning_rate']}")
     print(f"   Gradient clipping: {clip_norm}")
+    print(f"   Early stopping patience: {early_stopping_patience}")
+    print(f"\n⏱️  Estimated time:")
+    print(f"   Per epoch: 0.5-2 minutes")
+    print(f"   Total ({epochs} epochs): {epochs * 1 / 60:.1f} hours")
+    print(f"   Training batches per epoch: {len(train_loader)}")
     print("\n" + "="*80)
-    
-    print(f"\n⏱️  Estimated time per epoch: 0.5-2 minutes")
-    print(f"   Total estimated time for {epochs} epochs: {epochs * 1 / 60:.1f} hours")
-    print(f"   Training on {len(train_loader)} batches per epoch\n")
     
     training_start_time = time.time()
     
@@ -484,11 +479,11 @@ def train(
         epoch_start_time = time.time()
         
         train_loss, avg_unclipped, max_unclipped, avg_clipped, max_clipped = train_epoch(
-            model, train_loader, optimizer, criterion, device, clip_norm
+            model, train_loader, optimizer, lossFun, device, clip_norm
         )
         
         val_loss, mae, rmse, dir_acc = evaluate(
-            model, val_loader, criterion, device
+            model, val_loader, lossFun, device
         )
         
         epoch_time = time.time() - epoch_start_time

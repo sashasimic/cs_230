@@ -146,7 +146,7 @@ model:
 
 training:
   batch_size: 64
-  epochs: 100
+  epochs: 100  # Number of training epochs (configurable)
   learning_rate: 0.00005
   optimizer: 'adam'
   weight_decay: 0.02          # Increased from 0.01 (more L2 regularization)

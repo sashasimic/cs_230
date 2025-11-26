@@ -801,27 +801,33 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Training loop
-    print("\n" + "="*80)
-    print("   Training Loop")
-    print("="*80)
-    
+    # Training loop configuration
     best_val_loss = float('inf')
     best_val_mae = float('inf')
     patience_counter = 0
+    epochs = training_config['epochs']
     clip_norm = training_config.get('gradient_clip_norm', 1.0)
+    early_stopping_patience = training_config.get('early_stopping', {}).get('patience', 10)
     
-    print(f"\n⏱️  Starting training for {training_config['epochs']} epochs...")
+    print("\n" + "="*80)
+    print("   TRAINING CONFIGURATION")
+    print("="*80)
+    print(f"\n🚀 Starting training for {epochs} epochs")
     print(f"   Device: {device}")
     print(f"   Batch size: {training_config['batch_size']}")
     print(f"   Learning rate: {training_config['learning_rate']}")
     print(f"   Gradient clipping: {clip_norm}")
-    print(f"   Training on {len(dataloaders['train'])} batches per epoch\n")
-    print("="*80)
+    print(f"   Early stopping patience: {early_stopping_patience}")
+    print(f"\n⏱️  Estimated time:")
+    print(f"   Per epoch: 2-5 minutes")
+    print(f"   Total ({epochs} epochs): {epochs * 0.06:.1f} hours")
+    print(f"   Training batches per epoch: {len(dataloaders['train'])}")
+    print("\n" + "="*80)
     
     import time
     training_start_time = time.time()
     
-    for epoch in range(training_config['epochs']):
+    for epoch in range(epochs):
         epoch_start_time = time.time()
         
         # Training phase
