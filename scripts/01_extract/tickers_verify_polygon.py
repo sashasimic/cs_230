@@ -48,6 +48,29 @@ def load_config(config_path: str = 'configs/tickers.yaml') -> dict:
         return None
 
 
+def get_group_tickers(config: dict, group_name: str) -> list:
+    """Get tickers from a named group.
+    
+    Args:
+        config: Configuration dictionary
+        group_name: Name of the group (e.g., 'inflation', 'commodities')
+    
+    Returns:
+        List of ticker symbols in the group
+    """
+    if not config or 'ticker_groups' not in config:
+        print(f"❌ Error: No ticker_groups found in config")
+        return []
+    
+    if group_name not in config['ticker_groups']:
+        available_groups = list(config['ticker_groups'].keys())
+        print(f"❌ Error: Group '{group_name}' not found")
+        print(f"   Available groups: {', '.join(available_groups)}")
+        return []
+    
+    return config['ticker_groups'][group_name]
+
+
 def analyze_data_coverage(client: bigquery.Client, table_id: str, ticker: str = None, frequency: str = None):
     """Analyze data coverage and completeness."""
     print_header("Data Coverage Analysis")
@@ -116,7 +139,7 @@ def analyze_data_coverage(client: bigquery.Client, table_id: str, ticker: str = 
         print()
 
 
-def find_date_gaps(client: bigquery.Client, table_id: str, ticker: str, frequency: str, min_gap_hours: int = 2, exclude_weekends: bool = False):
+def find_date_gaps(client: bigquery.Client, table_id: str, ticker: str, frequency: str, min_gap_hours: int = 2, exclude_weekends_and_holidays: bool = False):
     """Find gaps in time series data.
     
     Args:
@@ -125,7 +148,7 @@ def find_date_gaps(client: bigquery.Client, table_id: str, ticker: str, frequenc
         ticker: Ticker symbol
         frequency: Data frequency
         min_gap_hours: Minimum gap size to report in hours
-        exclude_weekends: If True, exclude weekend gaps (Fri->Mon) from results
+        exclude_weekends_and_holidays: If True, exclude weekend and holiday gaps from results
     """
     print_header(f"Date Gaps Analysis - {ticker} ({frequency})")
     
@@ -155,8 +178,8 @@ def find_date_gaps(client: bigquery.Client, table_id: str, ticker: str, frequenc
         print(f"✅ No gaps >= {min_gap_hours} hours found!")
         return
     
-    # Filter out weekend gaps if requested
-    if exclude_weekends:
+    # Filter out weekend/holiday gaps if requested
+    if exclude_weekends_and_holidays:
         original_count = len(df)
         # For stock market data, gaps are expected for:
         # - Regular weekends (Fri->Mon: 48-72 hours)
@@ -416,6 +439,131 @@ def sample_data(client: bigquery.Client, table_id: str, ticker: str, frequency: 
     print()
 
 
+def quick_verify_tickers(client: bigquery.Client, table_id: str, tickers: list, frequency: str, exclude_weekends_and_holidays: bool = False):
+    """Quick verification of multiple tickers - shows summary table only."""
+    print_header("Quick Ticker Verification (Raw OHLCV)")
+    
+    results = []
+    for ticker in tickers:
+        # Get basic stats
+        query = f"""
+        SELECT 
+            '{ticker}' as ticker,
+            COUNT(*) as total_rows,
+            MIN(date) as start_date,
+            MAX(date) as end_date,
+            DATE_DIFF(MAX(date), MIN(date), DAY) + 1 as date_range_days,
+            COUNT(DISTINCT date) as unique_dates
+        FROM `{table_id}`
+        WHERE ticker = '{ticker}'
+            AND frequency = '{frequency}'
+        """
+        
+        try:
+            df = client.query(query).to_dataframe()
+            if df.empty or df['total_rows'].iloc[0] == 0:
+                results.append({
+                    'ticker': ticker,
+                    'status': '❌ NO DATA',
+                    'rows': 0,
+                    'start': 'N/A',
+                    'end': 'N/A',
+                    'days': 0,
+                    'gaps': 0
+                })
+                continue
+            
+            row = df.iloc[0]
+            
+            # Check for gaps
+            if exclude_weekends_and_holidays:
+                # Exclude weekend and holiday gaps
+                # Regular weekend: ~72 hours (Fri→Mon)
+                # 3-day holiday weekend: ~96 hours (Fri→Tue)
+                # Threshold of 100 hours catches most holidays while flagging real gaps
+                gap_query = f"""
+                WITH dates AS (
+                    SELECT 
+                        ticker,
+                        timestamp,
+                        TIMESTAMP_DIFF(
+                            timestamp,
+                            LAG(timestamp) OVER (PARTITION BY ticker ORDER BY timestamp),
+                            HOUR
+                        ) AS gap_hours
+                    FROM `{table_id}`
+                    WHERE ticker = '{ticker}' AND frequency = '{frequency}'
+                )
+                SELECT COUNT(*) as gap_count
+                FROM dates
+                WHERE gap_hours > 100  -- More than 4 days (excludes weekends + holidays)
+                """
+            else:
+                gap_query = f"""
+                WITH dates AS (
+                    SELECT 
+                        ticker,
+                        timestamp,
+                        TIMESTAMP_DIFF(
+                            timestamp,
+                            LAG(timestamp) OVER (PARTITION BY ticker ORDER BY timestamp),
+                            HOUR
+                        ) AS gap_hours
+                    FROM `{table_id}`
+                    WHERE ticker = '{ticker}' AND frequency = '{frequency}'
+                )
+                SELECT COUNT(*) as gap_count
+                FROM dates
+                WHERE gap_hours > 48  -- More than 2 days
+                """
+            
+            gap_df = client.query(gap_query).to_dataframe()
+            gap_count = gap_df['gap_count'].iloc[0] if not gap_df.empty else 0
+            
+            # Determine status
+            if row['total_rows'] < 100:
+                status = '⚠️  LOW DATA'
+            elif gap_count > 5:
+                status = '⚠️  GAPS'
+            else:
+                status = '✅ OK'
+            
+            results.append({
+                'ticker': ticker,
+                'status': status,
+                'rows': int(row['total_rows']),
+                'start': str(row['start_date']),
+                'end': str(row['end_date']),
+                'days': int(row['date_range_days']),
+                'gaps': int(gap_count)
+            })
+            
+        except Exception as e:
+            results.append({
+                'ticker': ticker,
+                'status': f'❌ ERROR',
+                'rows': 0,
+                'start': 'N/A',
+                'end': 'N/A',
+                'days': 0,
+                'gaps': 0
+            })
+    
+    # Print summary table
+    print(f"\n{'Ticker':<10} {'Status':<15} {'Rows':>8} {'Start Date':<12} {'End Date':<12} {'Days':>6} {'Gaps':>5}")
+    print("=" * 80)
+    
+    for r in results:
+        print(f"{r['ticker']:<10} {r['status']:<15} {r['rows']:>8,} {r['start']:<12} {r['end']:<12} {r['days']:>6} {r['gaps']:>5}")
+    
+    print()
+    print(f"Total: {len(results)} tickers | " + 
+          f"✅ {sum(1 for r in results if '✅' in r['status'])} OK | " +
+          f"⚠️  {sum(1 for r in results if '⚠️' in r['status'])} Warning | " +
+          f"❌ {sum(1 for r in results if '❌' in r['status'])} Error")
+    print()
+
+
 def main():
     """Main verification function."""
     import argparse
@@ -430,22 +578,31 @@ def main():
   # Verify specific ticker
   python scripts/01_extract/tickers_verify_polygon.py --ticker SPY --frequency daily
   
+  # Quick verify multiple tickers
+  python scripts/01_extract/tickers_verify_polygon.py --tickers CORN CANE COW UBC --frequency daily --quick
+  
+  # Quick verify ticker group
+  python scripts/01_extract/tickers_verify_polygon.py --group inflation --frequency daily --quick
+  
   # Check for gaps (excluding weekends/holidays)
-  python scripts/01_extract/tickers_verify_polygon.py --ticker SPY --frequency daily --check-gaps --exclude-weekends
+  python scripts/01_extract/tickers_verify_polygon.py --ticker SPY --frequency daily --check-gaps --exclude-weekends-and-holidays
   
   # Verify all tickers with gap checking
-  python scripts/01_extract/tickers_verify_polygon.py --frequency daily --check-gaps --exclude-weekends
+  python scripts/01_extract/tickers_verify_polygon.py --frequency daily --check-gaps --exclude-weekends-and-holidays
         """
     )
     
     parser.add_argument('--ticker', help='Filter by specific ticker (e.g., SPY). If not specified, verifies all tickers from config.')
+    parser.add_argument('--tickers', nargs='+', help='Quick verify multiple tickers (e.g., CORN CANE COW). Use with --quick flag.')
+    parser.add_argument('--group', help='Verify tickers from a named group (e.g., inflation, commodities, energy). Use with --quick flag.')
     parser.add_argument('--frequency', help='Filter by frequency (e.g., daily, hourly, 15m)')
     parser.add_argument('--config', default='configs/tickers.yaml', help='Path to tickers config file (default: configs/tickers.yaml)')
     parser.add_argument('--data-type', choices=['raw', 'indicators', 'both'], default='raw', 
                         help='Type of data to verify: raw (OHLCV), indicators, or both (default: raw)')
     parser.add_argument('--check-gaps', action='store_true', help='Check for date/time gaps (raw data only)')
     parser.add_argument('--min-gap-hours', type=int, default=2, help='Minimum gap size to report in hours (default: 2)')
-    parser.add_argument('--exclude-weekends', action='store_true', help='Exclude weekend gaps from gap analysis (recommended for stock market data)')
+    parser.add_argument('--exclude-weekends-and-holidays', action='store_true', help='Exclude weekend and holiday gaps from gap analysis (recommended for stock market data)')
+    parser.add_argument('--quick', action='store_true', help='Quick mode: lightweight verification with summary table (use with --tickers)')
     
     args = parser.parse_args()
     
@@ -453,18 +610,42 @@ def main():
         print("❌ Error: GCP_PROJECT_ID not set in environment")
         sys.exit(1)
     
+    # Quick mode validation
+    if args.quick:
+        if not args.tickers and not args.group:
+            print("❌ Error: --quick requires --tickers or --group")
+            sys.exit(1)
+        if not args.frequency:
+            print("❌ Error: --quick requires --frequency")
+            sys.exit(1)
+    
     print_header("Polygon Data Verification")
     print(f"Project: {PROJECT_ID}")
     print(f"Dataset: {DATASET_ID}")
     print(f"Table: {TABLE_NAME}")
     
+    # Load config early if needed
+    config = load_config(args.config)
+    
     # Load tickers from config if no specific ticker provided
     tickers_to_verify = []
-    if args.ticker:
+    if args.group:
+        # Load tickers from group
+        if not config:
+            print("❌ Error: Cannot load groups without config file")
+            sys.exit(1)
+        tickers_to_verify = get_group_tickers(config, args.group)
+        if not tickers_to_verify:
+            sys.exit(1)
+        print(f"📋 Group '{args.group}': {len(tickers_to_verify)} tickers - {', '.join(tickers_to_verify[:10])}{'...' if len(tickers_to_verify) > 10 else ''}")
+    elif args.tickers:
+        # Multiple tickers for quick mode
+        tickers_to_verify = args.tickers
+        print(f"📋 Verifying {len(tickers_to_verify)} tickers: {', '.join(tickers_to_verify)}")
+    elif args.ticker:
         tickers_to_verify = [args.ticker]
         print(f"Ticker: {args.ticker}")
     else:
-        config = load_config(args.config)
         if config and 'tickers' in config:
             tickers_to_verify = config['tickers']
             print(f"Verifying all tickers from config: {len(tickers_to_verify)} tickers")
@@ -483,6 +664,13 @@ def main():
         print(f"❌ Failed to connect to BigQuery: {str(e)}")
         sys.exit(1)
     
+    # Quick mode - lightweight multi-ticker verification
+    if args.quick:
+        table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_NAME}"
+        quick_verify_tickers(client, table_id, tickers_to_verify, args.frequency, args.exclude_weekends_and_holidays)
+        print_header("Verification Complete")
+        return
+    
     # Run analyses based on data type
     if args.data_type in ['raw', 'both']:
         table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_NAME}"
@@ -500,7 +688,7 @@ def main():
                 check_duplicates(client, table_id, ticker)
                 
                 if args.check_gaps and args.frequency:
-                    find_date_gaps(client, table_id, ticker, args.frequency, args.min_gap_hours, args.exclude_weekends)
+                    find_date_gaps(client, table_id, ticker, args.frequency, args.min_gap_hours, args.exclude_weekends_and_holidays)
         else:
             # Single ticker verification
             ticker = tickers_to_verify[0] if tickers_to_verify else args.ticker
@@ -510,7 +698,7 @@ def main():
             weekday_breakdown(client, table_id, ticker, args.frequency)
             
             if args.check_gaps and ticker and args.frequency:
-                find_date_gaps(client, table_id, ticker, args.frequency, args.min_gap_hours, args.exclude_weekends)
+                find_date_gaps(client, table_id, ticker, args.frequency, args.min_gap_hours, args.exclude_weekends_and_holidays)
             
             if ticker and args.frequency:
                 sample_data(client, table_id, ticker, args.frequency, data_type='raw')

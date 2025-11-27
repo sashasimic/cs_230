@@ -83,30 +83,30 @@ def submit_hyperparameter_tuning_job(
     print(f"{'='*80}\n")
     
     # Define hyperparameter search space
-    # Matches HYPERPARAMETER_GRID from submit_parallel.py
+    # TFT-specific parameter ranges based on model architecture
     hyperparameter_specs = {
         'hidden_size': hpt.DiscreteParameterSpec(
-            values=[32, 64, 128],
+            values=[64, 128],  # TFT benefits from larger hidden sizes
             scale='linear'
         ),
         'lstm_layers': hpt.DiscreteParameterSpec(
-            values=[1, 2],
+            values=[2, 3, 4],  # TFT typically uses 2-4 LSTM layers
+            scale='linear'
+        ),
+        'attention_heads': hpt.DiscreteParameterSpec(
+            values=[4, 8],  # Multi-head attention (must divide hidden_size)
             scale='linear'
         ),
         'learning_rate': hpt.DiscreteParameterSpec(
-            values=[0.0001, 0.001, 0.01],
+            values=[0.00005, 0.0001, 0.0005],  # TFT prefers lower LR
             scale='linear'
         ),
         'dropout': hpt.DiscreteParameterSpec(
-            values=[0.1, 0.2],
+            values=[0.2, 0.3, 0.4],  # TFT needs higher dropout for regularization
             scale='linear'
         ),
         'batch_size': hpt.DiscreteParameterSpec(
-            values=[64, 128],
-            scale='linear'
-        ),
-        'lookback_window': hpt.DiscreteParameterSpec(
-            values=[96, 192],
+            values=[32, 64],  # TFT is memory-intensive
             scale='linear'
         ),
     }
@@ -152,7 +152,33 @@ def submit_hyperparameter_tuning_job(
         worker_pool_specs=worker_pool_specs,
     )
     
-    # Create hyperparameter tuning job
+    # Get or create TensorBoard instance (matching submit_job.py pattern)
+    tensorboard_resource_name = None
+    try:
+        print(f"\n📊 Setting up TensorBoard...")
+        tensorboards = aiplatform.Tensorboard.list(filter=f'display_name="tensorboard-{PROJECT_ID}"')
+        
+        if tensorboards:
+            tensorboard = tensorboards[0]
+            tensorboard_resource_name = tensorboard.resource_name
+            print(f"   ✅ Using existing TensorBoard: {tensorboard.display_name}")
+            print(f"   Resource: {tensorboard_resource_name}")
+        else:
+            print(f"   Creating new TensorBoard instance...")
+            tensorboard = aiplatform.Tensorboard.create(
+                display_name=f"tensorboard-{PROJECT_ID}",
+                project=PROJECT_ID,
+                location=REGION,
+            )
+            tensorboard_resource_name = tensorboard.resource_name
+            print(f"   ✅ Created: {tensorboard.display_name}")
+            print(f"   Resource: {tensorboard_resource_name}")
+    except Exception as e:
+        print(f"\n⚠️  TensorBoard setup failed: {e}")
+        print(f"   HP tuning will continue without TensorBoard")
+        tensorboard_resource_name = None
+    
+    # Create hyperparameter tuning job with TensorBoard
     # Note: search_algorithm defaults to Bayesian optimization when not specified
     hp_job = aiplatform.HyperparameterTuningJob(
         display_name=job_name,
@@ -164,11 +190,40 @@ def submit_hyperparameter_tuning_job(
     )
     
     print(f"\n🚀 Submitting hyperparameter tuning job...")
-    hp_job.run()
+    
+    # Prepare run parameters
+    run_params = {}
+    
+    # Add TensorBoard and service account if TensorBoard is configured
+    if tensorboard_resource_name:
+        # Get project number for default compute service account
+        # This SA already has necessary GCS and Vertex AI permissions
+        import subprocess
+        result = subprocess.run(
+            ['gcloud', 'projects', 'describe', PROJECT_ID, '--format=value(projectNumber)'],
+            capture_output=True, text=True, check=True
+        )
+        project_number = result.stdout.strip()
+        service_account = f"{project_number}-compute@developer.gserviceaccount.com"
+        
+        run_params['tensorboard'] = tensorboard_resource_name
+        run_params['service_account'] = service_account
+        print(f"   📊 TensorBoard integration: ENABLED")
+        print(f"   Service account: {service_account}")
+    else:
+        print(f"   📊 TensorBoard integration: DISABLED")
+    
+    hp_job.run(**run_params)
     
     print(f"\n✅ Job submitted!")
     print(f"📊 Monitor at:")
     print(f"https://console.cloud.google.com/vertex-ai/training/training-pipelines?project={PROJECT_ID}")
+    
+    if tensorboard_resource_name:
+        tb_id = tensorboard_resource_name.split('/')[-1]
+        print(f"\n📈 TensorBoard:")
+        print(f"https://console.cloud.google.com/vertex-ai/experiments/tensorboard-instances/{tb_id}/experiments?project={PROJECT_ID}")
+    
     print(f"\n💡 Best trial will be automatically identified!\n")
     
     return hp_job
@@ -187,16 +242,16 @@ if __name__ == '__main__':
                        help='Job name (auto-generated if not provided)')
     args = parser.parse_args()
     
-    # GPU-enabled (default) - 2-3x faster per trial!
+    # CPU-only (slower but cheaper)
     submit_hyperparameter_tuning_job(
         job_name=args.job_name,
         dataset_version=args.dataset_version,
         model_type=args.model_type,
-        machine_type='n1-standard-4',        # N1 supports GPUs (~$0.19/hr)
-        accelerator_type='NVIDIA_TESLA_T4',   # T4 GPU (~$0.35/hr)
-        accelerator_count=1,                  # 1 GPU per trial
+        machine_type='e2-highmem-4',         # CPU-only: 32GB RAM (~$0.21/hr)
+        accelerator_type=None,
+        accelerator_count=0,
         max_trial_count=20,
-        parallel_trial_count=4,  # 4 parallel trials = 4 GPUs running simultaneously!
+        parallel_trial_count=3,
     )
     
     # CPU-only option (uncomment to use - cheaper but slower)

@@ -28,13 +28,22 @@ from typing import Dict, Optional
 if sys.platform == 'darwin':
     torch.set_num_threads(1)
 
-# TensorBoard will be imported locally when needed (Mac compatibility)
-SummaryWriter = None
-TENSORBOARD_AVAILABLE = False
-
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
+
+# Import TensorBoard utilities
+common_path = Path(__file__).parent.parent / 'common'
+if str(common_path) not in sys.path:
+    sys.path.insert(0, str(common_path))
+
+try:
+    import tensorboard_utils as tb_utils
+    print(f"\n✅ TensorBoard utilities loaded from: {tb_utils.__file__}")
+except ImportError as e:
+    print(f"\n⚠️  CRITICAL: Failed to import TensorBoard utilities: {e}")
+    print(f"   Looked in: {common_path}")
+    raise
 
 
 class PositionalEncoding(nn.Module):
@@ -636,7 +645,6 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
                 test_y_np = test_y_np.item() if test_y_np.shape == () else np.array(test_y_np.tolist())
             
             # Convert to PyTorch tensors
-            import torch
             train_X = torch.tensor(train_X_np, dtype=torch.float32)
             train_y = torch.tensor(train_y_np, dtype=torch.float32)
             val_X = torch.tensor(val_X_np, dtype=torch.float32)
@@ -826,36 +834,16 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     print(f"  Learning rate: {training_config['learning_rate']}")
     print(f"  Early stopping patience: {training_config['early_stopping']['patience']}")
     
-    # Setup TensorBoard (import only when needed for Mac compatibility)
-    writer = None
-    if config.get('logging', {}).get('tensorboard', False):
-        try:
-            # Import TensorBoard only when needed
-            from torch.utils.tensorboard import SummaryWriter
-            
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            
-            # Check for Vertex AI TensorBoard directory (set automatically by Vertex AI)
-            tensorboard_log_dir = os.getenv('AIP_TENSORBOARD_LOG_DIR')
-            
-            if tensorboard_log_dir:
-                # Vertex AI managed TensorBoard - logs auto-sync
-                log_dir = tensorboard_log_dir
-                writer = SummaryWriter(str(log_dir))
-                print(f"\n📊 TensorBoard (Vertex AI): {log_dir}")
-                print(f"   Logs will auto-sync to TensorBoard instance")
-            else:
-                # Local or manual TensorBoard - use local paths
-                log_dir = Path(config.get('logging', {}).get('log_dir', 'logs/tensorboard')) / timestamp
-                log_dir.mkdir(parents=True, exist_ok=True)
-                writer = SummaryWriter(str(log_dir))
-                print(f"\n📊 TensorBoard logs → {log_dir}")
-                print(f"   View with: tensorboard --logdir {log_dir.parent}")
-        except Exception as e:
-            print(f"\n⚠️  TensorBoard setup failed: {type(e).__name__}")
-            print(f"   Error: {e}")
-            print("   Training will continue without TensorBoard logging")
-            writer = None
+    # Setup TensorBoard
+    print(f"\n🔍 Initializing TensorBoard...")
+    print(f"   Config tensorboard enabled: {config.get('logging', {}).get('tensorboard', False)}")
+    writer = tb_utils.initialize_tensorboard_writer(config, 'tft', '')
+    
+    if writer is None:
+        print(f"\n⚠️  CRITICAL: TensorBoard writer is None!")
+        print(f"   All TensorBoard logging will be skipped.")
+    else:
+        print(f"\n✅ TensorBoard writer initialized successfully")
     
     # Initialize TFT model
     print("\n" + "="*80)
@@ -870,6 +858,26 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"  Total parameters: {total_params:,}")
     print(f"  Trainable parameters: {trainable_params:,}")
+    
+    # Log experiment metadata to TensorBoard
+    additional_model_info = {
+        'Model Type': 'Temporal Fusion Transformer',
+        'Hidden Size': model_config['hidden_size'],
+        'LSTM Layers': model_config['lstm_layers'],
+        'Attention Heads': model_config['attention_heads'],
+        'Dropout': model_config['dropout'],
+        'Total Parameters': f"{total_params:,}",
+        'Trainable Parameters': f"{trainable_params:,}"
+    }
+    
+    tb_utils.log_experiment_metadata(
+        writer, dataset_version, start_date, end_date, horizons_config,
+        lookback, num_features, num_horizons,
+        train_samples, val_samples, test_samples,
+        'Temporal Fusion Transformer', config, total_params, trainable_params,
+        additional_model_info
+    )
+    print(f"\u2705 Logged dataset and model info to TensorBoard\n")
     
     # Setup optimizer and loss
     optimizer = optim.Adam(
@@ -1003,21 +1011,37 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
                     print(f"    {layer_name:12s}: norm={stats['avg_norm']:.4f}, max={stats['max_norm']:.4f}, std={stats['avg_std']:.4f}")
         
         # Log to TensorBoard
-        if writer is not None:
-            current_lr = optimizer.param_groups[0]['lr']
-            writer.add_scalar('Loss/train', train_loss, epoch)
-            writer.add_scalar('Loss/val', val_loss, epoch)
-            writer.add_scalar('Metrics/MAE', metrics['mae'], epoch)
-            writer.add_scalar('Metrics/RMSE', metrics['rmse'], epoch)
-            writer.add_scalar('Metrics/DirectionalAccuracy', metrics['dir_acc'], epoch)
-            writer.add_scalar('Gradients/Unclipped_Avg', avg_unclipped, epoch)
-            writer.add_scalar('Gradients/Clipped_Avg', avg_clipped, epoch)
-            writer.add_scalar('LR', current_lr, epoch)
+        try:
+            # Prepare per-horizon metrics dict (exclude overall metrics)
+            per_horizon_metrics = {k: v for k, v in metrics.items() 
+                                  if k not in ['mae', 'mse', 'rmse', 'dir_acc']}
             
-            # Log per-horizon metrics to TensorBoard
-            for metric_name, metric_value in metrics.items():
-                if metric_name not in ['mae', 'mse', 'rmse', 'dir_acc']:  # Skip overall metrics
-                    writer.add_scalar(f'PerHorizon/{metric_name}', metric_value, epoch)
+            current_lr = optimizer.param_groups[0]['lr']
+            tb_utils.log_epoch_metrics(
+                writer, epoch, train_loss, val_loss, 
+                metrics['mae'], metrics['rmse'], metrics['dir_acc'],
+                per_horizon_metrics, current_lr,
+                avg_unclipped, avg_clipped
+            )
+            # Flush to ensure data is written immediately
+            if writer is not None:
+                writer.flush()
+        except Exception as e:
+            print(f"\n⚠️  ERROR logging epoch metrics: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # Log gradient and weight histograms to TensorBoard (every 10 epochs)
+        if (epoch + 1) % 10 == 0:
+            try:
+                tb_utils.log_gradients_and_weights(writer, model, epoch)
+                if writer is not None:
+                    writer.flush()
+                print(f"  ✅ Logged histograms")
+            except Exception as e:
+                print(f"  ⚠️  ERROR logging histograms: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Learning rate scheduler step (if enabled)
         if scheduler is not None:
@@ -1050,10 +1074,6 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
             if patience_counter >= training_config['early_stopping']['patience']:
                 print(f"\n⏹️  Early stopping triggered (patience: {patience_counter})")
                 break
-    
-    # Close TensorBoard writer
-    if writer is not None:
-        writer.close()
     
     # Final evaluation on test set
     print("\n" + "="*80)
@@ -1105,6 +1125,35 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
             horizon_strs.append(f"{key}={value:.6f}")
     if horizon_strs:
         print(f"  Per-Horizon MAE: {', '.join(horizon_strs)}")
+    
+    # Log hyperparameters to TensorBoard HParams
+    hparams = {
+        'model': 'TFT',
+        'hidden_size': model_config['hidden_size'],
+        'lstm_layers': model_config['lstm_layers'],
+        'attention_heads': model_config['attention_heads'],
+        'dropout': model_config['dropout'],
+        'lookback': lookback,
+        'batch_size': training_config['batch_size'],
+        'learning_rate': training_config['learning_rate'],
+        'weight_decay': training_config.get('weight_decay', 0.0),
+        'gradient_clip': training_config.get('gradient_clip_norm', 1.0),
+    }
+    
+    hparam_metrics = {
+        'hparam/best_val_loss': best_val_loss,
+        'hparam/best_val_mae': best_val_mae,
+        'hparam/test_loss': test_loss,
+        'hparam/test_mae': test_metrics['mae'],
+        'hparam/test_rmse': test_metrics['rmse'],
+        'hparam/test_dir_acc': test_metrics['dir_acc'],
+    }
+    
+    tb_utils.log_hyperparameters(writer, hparams, hparam_metrics)
+    
+    # Close TensorBoard writer
+    if writer is not None:
+        writer.close()
     
     print("\n" + "="*80)
     print("   Training Complete")

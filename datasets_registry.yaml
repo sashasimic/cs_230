@@ -3,7 +3,7 @@ tft/v3:
   model_type: tft
   version_number: v3
   local_path: data/datasets/tft/v3
-  created: '2025-11-20T20:33:31.542133'
+  created: '2025-11-27T09:49:35.835144'
   gcs_base_path: gs://inflation-prediction-478715-models/datasets/tft/v3/
   raw_dataset_id: projects/233829279510/locations/us-central1/datasets/1844449997047726080
   processed_dataset_id: N/A
@@ -12,7 +12,7 @@ tft/v4:
   model_type: tft
   version_number: v4
   local_path: data/datasets/tft/v4
-  created: '2025-11-20T22:38:50.789287'
+  created: '2025-11-27T09:47:23.433252'
   gcs_base_path: gs://inflation-prediction-478715-models/datasets/tft/v4/
   raw_dataset_id: projects/233829279510/locations/us-central1/datasets/5530224079585411072
   processed_dataset_id: N/A

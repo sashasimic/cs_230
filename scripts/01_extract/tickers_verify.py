@@ -56,6 +56,29 @@ def load_config(config_path: str = 'configs/tickers.yaml') -> dict:
         return None
 
 
+def get_group_tickers(config: dict, group_name: str) -> list:
+    """Get tickers from a named group.
+    
+    Args:
+        config: Configuration dictionary
+        group_name: Name of the group (e.g., 'inflation', 'commodities')
+    
+    Returns:
+        List of ticker symbols in the group
+    """
+    if not config or 'ticker_groups' not in config:
+        print(f"❌ Error: No ticker_groups found in config")
+        return []
+    
+    if group_name not in config['ticker_groups']:
+        available_groups = list(config['ticker_groups'].keys())
+        print(f"❌ Error: Group '{group_name}' not found")
+        print(f"   Available groups: {', '.join(available_groups)}")
+        return []
+    
+    return config['ticker_groups'][group_name]
+
+
 def check_alignment(client: bigquery.Client, ticker: str, frequency: str, 
                      start_date: str = None, end_date: str = None) -> Dict:
     """Check timestamp alignment between raw and synthetic tables."""
@@ -526,11 +549,17 @@ def export_combined_data(raw_df: pd.DataFrame, stored_df: pd.DataFrame,
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Verify synthetic indicator calculations by comparing with local computations',
+        description='Master verification orchestrator for Polygon and Synthetic data',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Verify all SMA indicators for SPY
+  # Quick verify multiple tickers (both raw and synthetic)
+  python scripts/01_extract/tickers_verify.py --tickers CORN CANE COW UBC --frequency daily --quick
+  
+  # Quick verify ticker group
+  python scripts/01_extract/tickers_verify.py --group inflation --frequency daily --quick
+  
+  # Verify all SMA indicators for SPY (detailed mode)
   python tickers_verify.py --ticker SPY --frequency daily \\
     --start 2024-01-01 --end 2024-01-31 \\
     --indicators sma_50 sma_200
@@ -554,10 +583,12 @@ Examples:
         """
     )
     
-    parser.add_argument('--ticker', required=True, help='Ticker symbol (e.g., SPY)')
+    parser.add_argument('--ticker', help='Ticker symbol (e.g., SPY) - required for detailed verification')
+    parser.add_argument('--tickers', nargs='+', help='Multiple tickers for quick verification (e.g., CORN CANE COW)')
+    parser.add_argument('--group', help='Verify tickers from a named group (e.g., inflation, commodities, energy). Use with --quick flag.')
     parser.add_argument('--frequency', required=True, help='Data frequency (e.g., 15m, 1h, daily)')
-    parser.add_argument('--start', required=True, help='Start date (YYYY-MM-DD)')
-    parser.add_argument('--end', required=True, help='End date (YYYY-MM-DD)')
+    parser.add_argument('--start', help='Start date (YYYY-MM-DD) - required for detailed verification')
+    parser.add_argument('--end', help='End date (YYYY-MM-DD) - required for detailed verification')
     parser.add_argument('--indicators', nargs='+', help='Indicators to verify (defaults to config file indicators)')
     parser.add_argument('--config', type=str, default='configs/tickers.yaml',
                        help='Path to config file (default: configs/tickers.yaml)')
@@ -569,8 +600,10 @@ Examples:
     parser.add_argument('--export', action='store_true', help='Export combined data to Parquet file')
     parser.add_argument('--output-file', type=str, default='temp/tickers_verification_output.parquet',
                        help='Output file path for export (default: temp/tickers_verification_output.parquet)')
-    parser.add_argument('--exclude-weekends', action='store_true',
-                       help='Exclude weekend gaps from analysis (recommended for stock market data)')
+    parser.add_argument('--exclude-weekends-and-holidays', action='store_true',
+                       help='Exclude weekend and holiday gaps from analysis (recommended for stock market data)')
+    parser.add_argument('--quick', action='store_true',
+                       help='Quick mode: Run quick verification for both raw and synthetic data (requires --tickers)')
 
     args = parser.parse_args()
 
@@ -578,6 +611,85 @@ Examples:
         print("❌ Error: GCP_PROJECT_ID environment variable not set")
         print("\nSet it with:")
         print("  export GCP_PROJECT_ID='your-project-id'")
+        sys.exit(1)
+    
+    # Quick mode - delegate to specialized scripts
+    if args.quick:
+        if not args.tickers and not args.group:
+            print("❌ Error: --quick requires --tickers or --group")
+            sys.exit(1)
+        
+        print("\n" + "=" * 80)
+        print("   Master Ticker Verification (Quick Mode)")
+        print("=" * 80)
+        print(f"\nProject: {PROJECT_ID}")
+        print(f"Dataset: {DATASET_ID}")
+        
+        # Display what we're verifying
+        if args.group:
+            print(f"Group: {args.group}")
+        elif args.tickers:
+            print(f"Tickers: {', '.join(args.tickers)}")
+        print(f"Frequency: {args.frequency}")
+        print()
+        
+        # Build command base
+        # Run polygon verification
+        print_header("RAW OHLCV DATA (Polygon)")
+        polygon_cmd = ['python', 'scripts/01_extract/tickers_verify_polygon.py']
+        
+        if args.group:
+            polygon_cmd.extend(['--group', args.group])
+        else:
+            polygon_cmd.extend(['--tickers'] + args.tickers)
+        
+        polygon_cmd.extend(['--frequency', args.frequency, '--quick'])
+        
+        if args.exclude_weekends_and_holidays:
+            polygon_cmd.append('--exclude-weekends-and-holidays')
+        
+        print(f"Running: {' '.join(polygon_cmd)}\n")
+        polygon_result = subprocess.run(polygon_cmd)
+        
+        if polygon_result.returncode != 0:
+            print("⚠️  Polygon verification had issues")
+        
+        # Run synthetic verification
+        print_header("SYNTHETIC INDICATORS")
+        synthetic_cmd = ['python', 'scripts/01_extract/tickers_verify_synthetic.py']
+        
+        if args.group:
+            synthetic_cmd.extend(['--group', args.group])
+        else:
+            synthetic_cmd.extend(['--tickers'] + args.tickers)
+        
+        synthetic_cmd.extend(['--frequency', args.frequency, '--quick'])
+        
+        if args.exclude_weekends_and_holidays:
+            synthetic_cmd.append('--exclude-weekends-and-holidays')
+        
+        print(f"Running: {' '.join(synthetic_cmd)}\n")
+        synthetic_result = subprocess.run(synthetic_cmd)
+        
+        if synthetic_result.returncode != 0:
+            print("⚠️  Synthetic verification had issues")
+        
+        print_header("Quick Verification Complete")
+        if polygon_result.returncode == 0 and synthetic_result.returncode == 0:
+            print("✅ Both raw and synthetic data verified successfully!\n")
+            sys.exit(0)
+        else:
+            print("⚠️  Some verifications had issues. See details above.\n")
+            sys.exit(1)
+    
+    # Regular detailed verification mode - validate required args
+    if not args.ticker:
+        print("❌ Error: --ticker is required for detailed verification")
+        print("   Use --tickers with --quick for multi-ticker quick verification")
+        sys.exit(1)
+    
+    if not args.start or not args.end:
+        print("❌ Error: --start and --end are required for detailed verification")
         sys.exit(1)
     
     print("\n" + "=" * 80)

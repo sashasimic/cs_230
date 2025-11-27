@@ -2,6 +2,9 @@
 # Economic Cycle & Inflation Forecasting Framework
 # Mission: Track cyclical elements and inflation dynamics through market indicators
 
+# ========================================
+# FLAT LIST
+# ========================================
 tickers:
   # ========================================
   # A. EQUITY MARKET INDICES
@@ -70,6 +73,14 @@ tickers:
   - SOYB     # Teucrium Soybean ETF - Food inflation proxy
   - RJA      # Elements Rogers Agriculture ETF - Food inflation proxy
   - GLD      # Gold - Inflation hedge, policy distrust indicator
+
+  - CORN     # Corn - Food inflation proxy
+  - CANE     # Teucrium Sugar Fund (sugar futures)
+  - COW      # Cattle - Livestock inflation proxy
+  - UBC      # other livestock ETNs. Only 269 rows
+  - UGA      # United States Gasoline Fund (RBOB gasoline)
+  - UNG      # United States Natural Gas Fund (nat gas)
+
   
   # ========================================
   # F. REAL ESTATE (Rate & Inflation Link)
@@ -145,3 +156,148 @@ indicators:
 # NOTE: All BigQuery settings (project_id, dataset_id, table_name) are
 # configured via environment variables in .env (see .env.example)
 # This allows for easier deployment across different environments
+
+# ========================================
+# TICKER GROUPS (for quick verification)
+# ========================================
+ticker_groups:
+  # Inflation-focused group
+  inflation:
+    - DBC      # Broad Commodities Index
+    - USO      # Crude Oil
+    - BNO      # Brent Oil
+    - DBA      # Agriculture
+    - WEAT     # Wheat
+    - SOYB     # Soybean
+    - CORN     # Corn
+    - CANE     # Sugar
+    - COW      # Cattle
+    - UGA      # Gasoline
+    - UNG      # Natural Gas
+  
+  # Commodities group
+  commodities:
+    - DBC
+    - USO
+    - BNO
+    - CPER
+    - DBA
+    - ORN
+    - WEAT
+    - SOYB
+    - RJA
+    - GLD
+    - CORN
+    - CANE
+    - COW
+    - UBC
+  
+  # Energy group
+  energy:
+    - XLE
+    - USO
+    - BNO
+    - UGA
+    - UNG
+  
+  # Agriculture group
+  agriculture:
+    - DBA
+    - ORN
+    - WEAT
+    - SOYB
+    - RJA
+    - CORN
+    - CANE
+    - COW
+    - UBC
+  
+  # Equity indices
+  equity:
+    - SPY
+    - QQQ
+    - IWM
+    - RSP
+  
+  # Sector ETFs
+  sectors:
+    - XLF
+    - XLI
+    - XLY
+    - XLK
+    - XLE
+    - XLB
+    - XLP
+    - XLV
+    - XLU
+    - XLRE
+  
+  # Fixed income
+  fixed_income:
+    - BIL
+    - SHY
+    - IEF
+    - TLT
+    - TIP
+    - STIP
+  
+  # Credit markets
+  credit:
+    - LQD
+    - HYG
+    - EMB
+  
+  # Currency
+  currency:
+    - UUP
+    - FXE
+  
+  # Real estate
+  real_estate:
+    - ITB
+    - XLRE
+  
+  # All tickers (complete list)
+  all:
+    - SPY
+    - QQQ
+    - IWM
+    - RSP
+    - XLF
+    - XLI
+    - XLY
+    - XLK
+    - XLE
+    - XLB
+    - XLP
+    - XLV
+    - XLU
+    - XLRE
+    - BIL
+    - SHY
+    - IEF
+    - TLT
+    - TIP
+    - STIP
+    - LQD
+    - HYG
+    - EMB
+    - DBC
+    - USO
+    - BNO
+    - CPER
+    - DBA
+    - ORN
+    - WEAT
+    - SOYB
+    - RJA
+    - GLD
+    - CORN
+    - CANE
+    - COW
+    - UBC
+    - UGA
+    - UNG
+    - ITB
+    - UUP
+    - FXE

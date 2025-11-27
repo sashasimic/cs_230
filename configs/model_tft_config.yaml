@@ -142,7 +142,7 @@ data:
   # GENERAL DATA CONFIGURATION
   # ============================================================
   # Date range for training data
-  start_date: '2016-04-01'  # Reduced range to manage memory usage
+  start_date: '2020-05-01' # ex, 2016-04-01, 2020-05-01
   end_date: '2025-11-13'    # Future date for ongoing data collection/test split
   train_ratio: 0.7
   val_ratio: 0.15
@@ -150,7 +150,7 @@ data:
   
   # Time series parameters
   lookback_window: 192        # 192 * 15min = 48 hours (matches dataset v3)
-  prediction_horizons: [4, 8, 16]  # 1h, 2h, 4h ahead (matches dataset v3)
+  prediction_horizons: [7, 14, 30]  # 1h, 2h, 4h ahead (matches dataset v3)
   
   # Target variable
   target: 'agriculture_basket_returns'  # Average return of WEAT, SOYB, RJA (food inflation proxy)
@@ -239,7 +239,7 @@ training:
   # Early stopping
   early_stopping:
     enabled: true
-    patience: 15  # Match decoder transformer and LSTM (was 5, too short)
+    patience: 30  # Match decoder transformer and LSTM (was 5, too short)
     monitor: 'val_loss'
     mode: 'min'
   
