@@ -1032,16 +1032,17 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
             traceback.print_exc()
         
         # Log gradient and weight histograms to TensorBoard (every 10 epochs)
-        if (epoch + 1) % 10 == 0:
-            try:
-                tb_utils.log_gradients_and_weights(writer, model, epoch)
-                if writer is not None:
-                    writer.flush()
-                print(f"  ✅ Logged histograms")
-            except Exception as e:
-                print(f"  ⚠️  ERROR logging histograms: {e}")
-                import traceback
-                traceback.print_exc()
+        # NOTE: Disabled for HP tuning to avoid potential crashes with GCS-backed writers
+        # if (epoch + 1) % 10 == 0:
+        #     try:
+        #         tb_utils.log_gradients_and_weights(writer, model, epoch)
+        #         if writer is not None:
+        #             writer.flush()
+        #         print(f"  ✅ Logged histograms")
+        #     except Exception as e:
+        #         print(f"  ⚠️  ERROR logging histograms: {e}")
+        #         import traceback
+        #         traceback.print_exc()
         
         # Learning rate scheduler step (if enabled)
         if scheduler is not None:
