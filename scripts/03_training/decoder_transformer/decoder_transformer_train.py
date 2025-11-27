@@ -28,6 +28,19 @@ from typing import Optional, Dict
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+# Import TensorBoard utilities
+common_path = Path(__file__).parent.parent / 'common'
+if str(common_path) not in sys.path:
+    sys.path.insert(0, str(common_path))
+
+try:
+    import tensorboard_utils as tb_utils
+    print(f"\n✅ TensorBoard utilities loaded from: {tb_utils.__file__}")
+except ImportError as e:
+    print(f"\n⚠️  CRITICAL: Failed to import TensorBoard utilities: {e}")
+    print(f"   Looked in: {common_path}")
+    raise
+
 
 class PositionalEncoding(nn.Module):
     """Sinusoidal positional encoding for transformer."""
@@ -808,44 +821,10 @@ def train(
     print(f"   Total: {total_params:,}")
     print(f"   Trainable: {trainable_params:,}")
     
-    # Setup TensorBoard (lazy import to avoid Mac ARM64 issues)
-    writer = None
-    if config.get('logging', {}).get('tensorboard', False):
-        try:
-            # Lazy import - only load when actually needed
-            from torch.utils.tensorboard import SummaryWriter
-            
-            # Get evaluation mode early for TensorBoard path
-            use_teacher_forcing_eval = config['training'].get('eval_teacher_forcing', True)
-            
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            eval_suffix = "_tf" if use_teacher_forcing_eval else "_ar"
-            
-            # Check for Vertex AI TensorBoard directory (set automatically by Vertex AI)
-            tensorboard_log_dir = os.getenv('AIP_TENSORBOARD_LOG_DIR')
-            print(f"   AIP_TENSORBOARD_LOG_DIR env var: {tensorboard_log_dir}")
-            
-            if tensorboard_log_dir:
-                # Vertex AI managed TensorBoard - logs auto-sync
-                log_dir = tensorboard_log_dir
-                writer = SummaryWriter(str(log_dir))
-                print(f"\n📊 TensorBoard (Vertex AI): {log_dir}")
-                print(f"   Logs will auto-sync to TensorBoard instance")
-            else:
-                # Local or manual TensorBoard - use local paths
-                base_log_dir = Path(config.get('logging', {}).get('log_dir', 'logs/tensorboard'))
-                log_dir = base_log_dir / f"decoder{eval_suffix}" / timestamp
-                log_dir.mkdir(parents=True, exist_ok=True)
-                writer = SummaryWriter(str(log_dir))
-                print(f"\n📊 TensorBoard logs → {log_dir}")
-                print(f"   View with: tensorboard --logdir {base_log_dir}")
-        except Exception as e:
-            print(f"\n⚠️  TensorBoard not available: {type(e).__name__}")
-            print(f"   Error details: {str(e)}")
-            import traceback
-            print(f"   Traceback: {traceback.format_exc()}")
-            print("   Training will continue without TensorBoard logging")
-            writer = None
+    # Setup TensorBoard
+    use_teacher_forcing_eval = config['training'].get('eval_teacher_forcing', True)
+    eval_suffix = "_tf" if use_teacher_forcing_eval else "_ar"
+    writer = tb_utils.initialize_tensorboard_writer(config, 'decoder', eval_suffix)
     
     # Loss and optimizer
     criterion = nn.MSELoss()
@@ -864,6 +843,24 @@ def train(
         model.parameters(),
         lr=actual_lr,
         weight_decay=config['training'].get('weight_decay', 0.0)
+    )
+    
+    # Log comprehensive experiment info to TensorBoard
+    eval_mode = "Teacher Forcing" if use_teacher_forcing_eval else "Pure Autoregressive"
+    additional_model_info = {
+        'Model Type': 'FinCast-Enhanced' if use_fincast else 'Standard Decoder Transformer',
+        'Evaluation Mode': eval_mode,
+    }
+    if use_fincast:
+        additional_model_info['FinCast Checkpoint'] = fincast_config.get('checkpoint_path', 'N/A')
+        additional_model_info['FinCast LR Scale'] = f"{fincast_config.get('lr_scale', 1.0)}x"
+    
+    tb_utils.log_experiment_metadata(
+        writer, dataset_version, start_date, end_date, horizons_config,
+        lookback, num_features, num_horizons,
+        train_samples, val_samples, test_samples,
+        'Decoder Transformer', config, total_params, trainable_params,
+        additional_model_info
     )
     
     # Training hyperparams with early stopping
@@ -934,19 +931,19 @@ def train(
         print(f"  Grad Norm (clipped):   avg={avg_clipped:.4f}, max={max_clipped:.4f}")
         
         # Log to TensorBoard
-        if writer is not None:
-            writer.add_scalar('Loss/train', train_loss, epoch)
-            writer.add_scalar('Loss/val', val_loss, epoch)
-            writer.add_scalar('Metrics/MAE', mae, epoch)
-            writer.add_scalar('Metrics/RMSE', rmse, epoch)
-            writer.add_scalar('Metrics/DirectionalAccuracy', dir_acc, epoch)
-            writer.add_scalar('Gradients/Unclipped_Avg', avg_unclipped, epoch)
-            writer.add_scalar('Gradients/Clipped_Avg', avg_clipped, epoch)
-            writer.add_scalar('LR', config['training']['learning_rate'], epoch)
-            
-            # Log per-horizon metrics to TensorBoard
-            for metric_name, metric_value in per_horizon_metrics.items():
-                writer.add_scalar(f'PerHorizon/{metric_name}', metric_value, epoch)
+        try:
+            tb_utils.log_epoch_metrics(
+                writer, epoch, train_loss, val_loss, mae, rmse, dir_acc,
+                per_horizon_metrics, config['training']['learning_rate'],
+                avg_unclipped, avg_clipped
+            )
+            # Flush to ensure data is written immediately
+            if writer is not None:
+                writer.flush()
+        except Exception as e:
+            print(f"\n⚠️  ERROR logging epoch metrics: {e}")
+            import traceback
+            traceback.print_exc()
         
         # Every 10 epochs, dump layer-wise grad stats
         if (epoch + 1) % 10 == 0:
@@ -969,6 +966,28 @@ def train(
                     f"max={stats['max']:.6f}, "
                     f"std={stats['std']:.6f}"
                 )
+            
+            # Log gradient and weight histograms to TensorBoard
+            try:
+                tb_utils.log_gradients_and_weights(writer, model, epoch)
+                if writer is not None:
+                    writer.flush()
+                print(f"  ✅ Logged histograms")
+            except Exception as e:
+                print(f"  ⚠️  ERROR logging histograms: {e}")
+                import traceback
+                traceback.print_exc()
+            
+            # Visualize attention patterns
+            # TEMPORARILY DISABLED: Attention viz causes TensorBoard to fail
+            # TODO: Debug matplotlib figure logging in Docker container
+            # try:
+            #     tb_utils.visualize_attention_weights(model, val_loader, device, writer, epoch, num_samples=2)
+            #     print(f"  ✅ Logged attention visualizations")
+            # except Exception as e:
+            #     print(f"  ⚠️  ERROR visualizing attention: {e}")
+            #     import traceback
+            #     traceback.print_exc()
         
         print("")
         
@@ -999,10 +1018,6 @@ def train(
             if patience_counter >= early_stopping_patience:
                 print(f"\n⏹️  Early stopping triggered (patience: {patience_counter})")
                 break
-    
-    # Close TensorBoard writer
-    if writer is not None:
-        writer.close()
     
     # Final evaluation on test set
     print("\n" + "="*80)
@@ -1036,6 +1051,36 @@ def train(
                 horizon_strs.append(f"{key}={value:.6f}")
         if horizon_strs:
             print(f"  Per-Horizon MAE: {', '.join(horizon_strs)}")
+    
+    # Log hyperparameters to TensorBoard HParams dashboard
+    hparams = {
+        'lr': actual_lr,
+        'batch_size': config['training']['batch_size'],
+        'hidden_dim': config['model']['hidden_dim'],
+        'num_layers': config['model']['num_layers'],
+        'num_heads': config['model']['num_heads'],
+        'feedforward_dim': config['model']['feedforward_dim'],
+        'dropout': config['model']['dropout'],
+        'lookback': lookback,
+        'clip_norm': clip_norm if clip_norm else 0,
+        'eval_mode': 1 if use_teacher_forcing_eval else 0,  # 1=TF, 0=AR
+        'fincast': 1 if use_fincast else 0,
+    }
+    
+    metrics = {
+        'hparam/best_val_loss': best_val_loss,
+        'hparam/best_val_mae': best_val_mae,
+        'hparam/test_loss': test_loss,
+        'hparam/test_mae': test_mae,
+        'hparam/test_rmse': test_rmse,
+        'hparam/test_dir_acc': test_dir_acc,
+    }
+    
+    tb_utils.log_hyperparameters(writer, hparams, metrics)
+    
+    # Close writer
+    if writer is not None:
+        writer.close()
     
     print("\n" + "="*80)
     print("   Training Complete")
