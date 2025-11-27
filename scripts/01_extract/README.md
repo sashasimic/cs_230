@@ -94,8 +94,26 @@ python scripts/01_extract/gdelt_load.py \
 ### Data Verification
 
 #### `tickers_verify.py` - Main Verification Orchestrator
-Delegates verification to specialized scripts.
+Master script that orchestrates both raw and synthetic data verification.
 
+**Quick Mode (Multi-Ticker Summary):**
+```bash
+# Verify specific tickers
+python scripts/01_extract/tickers_verify.py \
+  --tickers CORN CANE COW UBC UGA \
+  --frequency daily \
+  --quick \
+  --exclude-weekends-and-holidays
+
+# Verify ticker group
+python scripts/01_extract/tickers_verify.py \
+  --group inflation \
+  --frequency daily \
+  --quick \
+  --exclude-weekends-and-holidays
+```
+
+**Detailed Mode (Single Ticker):**
 ```bash
 python scripts/01_extract/tickers_verify.py \
   --ticker SPY --frequency daily \
@@ -104,26 +122,60 @@ python scripts/01_extract/tickers_verify.py \
 ```
 
 **Output:**
-- Console: Verification summary with statistics
+- **Quick mode**: Summary table showing data ranges, gaps, and status for all tickers
+- **Detailed mode**: Full verification report with statistics and optional export
 - Files (with `--export`): `temp/tickers_verification_output.{parquet,csv}`
 
 #### `tickers_verify_polygon.py` - Raw Data Verification
-Verifies OHLCV data quality.
+Verifies OHLCV data quality from Polygon.io.
+
+**Quick Mode Examples:**
+```bash
+# Quick verify multiple tickers
+python scripts/01_extract/tickers_verify_polygon.py \
+  --tickers CORN CANE COW UBC \
+  --frequency daily \
+  --quick \
+  --exclude-weekends-and-holidays
+
+# Quick verify ticker group
+python scripts/01_extract/tickers_verify_polygon.py \
+  --group inflation \
+  --frequency daily \
+  --quick
+```
 
 **Checks:**
 - Missing timestamps and gaps
-- Weekend/holiday exclusion for stock data
+- Weekend/holiday exclusion for stock data (use `--exclude-weekends-and-holidays`)
 - Data range validation
 - Volume and price sanity checks
+- Duplicate detection
 
 #### `tickers_verify_synthetic.py` - Indicator Verification
-Verifies synthetic indicators.
+Verifies synthetic indicators computed from raw data.
+
+**Quick Mode Examples:**
+```bash
+# Quick verify multiple tickers
+python scripts/01_extract/tickers_verify_synthetic.py \
+  --tickers CORN CANE COW UBC \
+  --frequency daily \
+  --quick
+
+# Quick verify ticker group
+python scripts/01_extract/tickers_verify_synthetic.py \
+  --group commodities \
+  --frequency daily \
+  --quick
+```
 
 **Checks:**
 - Indicator coverage across date range
 - Warmup period validation
 - Alignment with raw data
 - Value range checks
+- Gap detection
 
 #### `gdelt_verify.py` - GDELT Data Verification
 Verifies GDELT sentiment data quality and completeness.
@@ -198,6 +250,31 @@ POLYGON_API_KEY=your-polygon-api-key
 
 ### Tickers Config (`configs/tickers.yaml`)
 ```yaml
+# Ticker groups for quick verification
+ticker_groups:
+  inflation:
+    - DBC      # Broad Commodities Index
+    - USO      # Crude Oil
+    - GLD      # Gold
+    - TIP      # TIPS
+    # ... more inflation-related tickers
+  
+  commodities:
+    - DBC
+    - USO
+    - CORN
+    - CANE
+    # ... more commodity tickers
+  
+  equity:
+    - SPY
+    - QQQ
+    - IWM
+    - RSP
+  
+  # More groups: energy, agriculture, sectors, etc.
+
+# Flat list (backwards compatibility)
 tickers:
   - SPY  # S&P 500
   - QQQ  # NASDAQ 100
@@ -390,12 +467,26 @@ python scripts/01_extract/tickers_verify.py \
 ```bash
 # Load latest data (incremental)
 python scripts/01_extract/tickers_load.py
+
+# Quick verify all data
+python scripts/01_extract/tickers_verify.py \
+  --group all \
+  --frequency daily \
+  --quick \
+  --exclude-weekends-and-holidays
 ```
 
 ### Reload Specific Ticker
 ```bash
 # Force reload SPY data
 python scripts/01_extract/tickers_load.py --ticker SPY --reload
+
+# Verify after reload
+python scripts/01_extract/tickers_verify_polygon.py \
+  --ticker SPY \
+  --frequency daily \
+  --check-gaps \
+  --exclude-weekends-and-holidays
 ```
 
 ### Export Data for Analysis
@@ -460,6 +551,32 @@ python scripts/01_extract/tickers_load.py --frequency daily
      Cannot fetch data from Polygon.io without API key
 ```
 
+## Ticker Groups
+
+Ticker groups allow you to verify related tickers together:
+
+**Available Groups:**
+- `inflation` - Commodities, energy, TIPS (inflation indicators)
+- `commodities` - All commodity ETFs
+- `energy` - Energy sector and oil/gas
+- `agriculture` - Food and agricultural commodities
+- `equity` - Major equity indices
+- `sectors` - All sector ETFs
+- `fixed_income` - Treasury bonds and TIPS
+- `credit` - Credit market indicators
+- `currency` - USD and Euro
+- `real_estate` - Real estate tickers
+- `all` - Complete list of all tickers
+
+**Usage:**
+```bash
+# Verify inflation group
+python scripts/01_extract/tickers_verify.py \
+  --group inflation \
+  --frequency daily \
+  --quick
+```
+
 ## Error Handling
 
 - **No Polygon API key**: Scripts automatically skip tickers that already have data in BigQuery
@@ -467,7 +584,8 @@ python scripts/01_extract/tickers_load.py --frequency daily
 - **Missing data**: Gaps are logged and can be inspected with verification scripts
 - **Duplicates**: Automatic deduplication on (ticker, timestamp, frequency) during merge
 - **Warmup periods**: Synthetic indicators respect required warmup periods (e.g., SMA_200 needs 200 bars)
-- **Weekends/holidays**: Verification scripts can exclude expected market closures
+- **Weekends/holidays**: Use `--exclude-weekends-and-holidays` flag to exclude expected market closures (~72 hour weekend gaps and ~96 hour holiday gaps)
+- **Gap detection**: Quick mode shows gap counts; detailed mode shows specific gap dates and durations
 
 ## Output Files
 
