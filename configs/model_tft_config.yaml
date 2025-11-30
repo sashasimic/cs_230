@@ -305,10 +305,11 @@ model:
 
   hidden_size: 96   # Architecture components (granular control)
   use_variable_selection: false  # Disabled for simplicity (use linear projection)
-  use_lstm: false                # Disabled (no recurrent encoding)
+  use_lstm: true                 # Enable LSTM encoder
+  lstm_layers: 1                 # Number of stacked LSTM layers (1 or 2 recommended)
   use_augmentation: false        # No augmented features
   use_static_enrichment: false   # DISABLE: Blocks gradients before attention
-  use_position_wise_grn: false   # DISABLE: Blocks gradients after attention
+  use_position_wise_grn: true   # DISABLE: Blocks gradients after attention
   
   # Attention configuration
   attention_heads: 8

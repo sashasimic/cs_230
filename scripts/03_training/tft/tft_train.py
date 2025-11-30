@@ -356,6 +356,9 @@ class TemporalFusionTransformer(nn.Module):
                 dropout=self.dropout if self.lstm_layers > 1 else 0
             )
             self.lstm_norm = nn.LayerNorm(self.hidden_size)  # Normalize LSTM output
+            print(f"   ✅ LSTM Encoder ENABLED ({self.lstm_layers} layer{'s' if self.lstm_layers > 1 else ''}, unidirectional)")
+        else:
+            print(f"   ✗ LSTM Encoder DISABLED (using direct projection)")
         
         # ===== 3. Static Enrichment (using GRN) =====
         # Embeddings for static categorical features
