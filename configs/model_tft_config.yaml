@@ -307,7 +307,6 @@ model:
   use_variable_selection: false  # Disable VSN - test baseline on augmented data first
   use_lstm: false                # Disable LSTM - simpler baseline
   lstm_layers: 1                 # Number of stacked LSTM layers (1 or 2 recommended)
-  use_augmentation: false        # No augmented features (data augmentation controlled separately)
   use_static_enrichment: false   # DISABLE: Blocks gradients before attention
   use_position_wise_grn: false   # Disable GRN - test pure baseline on augmented data
   
