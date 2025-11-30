@@ -393,14 +393,28 @@ def compute_layer_grad_stats(model: nn.Module) -> dict:
         grad_std = param.grad.data.std().item() if param.grad.data.numel() > 1 else 0.0
         grad_max = param.grad.data.abs().max().item()
         
-        # Group by rough layer type
+        # Group by layer type (matching TFT's detailed breakdown)
         if 'input_projection' in name:
             layer_name = 'Input'
         elif 'transformer_encoder.layers' in name:
             parts = name.split('.')
             layer_idx = parts[2] if len(parts) > 2 else '?'
-            layer_name = f'Encoder_L{layer_idx}'
-        elif 'future_decoder' in name or 'future_in_proj' in name or 'future_out_proj' in name:
+            # Break out attention vs feedforward within each encoder layer
+            if 'self_attn' in name:
+                layer_name = f'Attention_L{layer_idx}'
+            elif 'linear1' in name or 'linear2' in name:
+                layer_name = f'Feedforward_L{layer_idx}'
+            elif 'norm1' in name or 'norm2' in name:
+                # Norms contribute to the attention/ff layers they're part of
+                if 'norm1' in name:
+                    layer_name = f'Attention_L{layer_idx}'
+                else:
+                    layer_name = f'Feedforward_L{layer_idx}'
+            else:
+                layer_name = f'Encoder_L{layer_idx}_Other'
+        elif 'enc_norm' in name:
+            layer_name = 'EncoderNorm'
+        elif 'future_decoder' in name or 'future_in_proj' in name or 'future_out_proj' in name or 'start_token' in name:
             layer_name = 'FutureDecoder'
         elif 'pos_encoder' in name:
             layer_name = 'PosEnc'
@@ -562,6 +576,18 @@ def train(
     # Load config
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
+    
+    # Set random seeds for reproducibility (if configured)
+    if 'seed' in config:
+        seed = config['seed']
+        print(f"🎲 Setting random seed: {seed}")
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
     
     # Load data if not provided
     if dataloaders is None:
@@ -1056,10 +1082,10 @@ def train(
     hparams = {
         'lr': actual_lr,
         'batch_size': config['training']['batch_size'],
-        'hidden_dim': config['model']['hidden_dim'],
-        'num_layers': config['model']['num_layers'],
-        'num_heads': config['model']['num_heads'],
-        'feedforward_dim': config['model']['feedforward_dim'],
+        'd_model': config['model']['d_model'],
+        'num_layers': config['model']['n_layers'],
+        'num_heads': config['model']['n_heads'],
+        'feedforward_dim': config['model']['d_ff'],
         'dropout': config['model']['dropout'],
         'lookback': lookback,
         'clip_norm': clip_norm if clip_norm else 0,

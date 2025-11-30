@@ -18,6 +18,12 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 import torch
 from torch.utils.data import Dataset, DataLoader
 
+# Add current directory to path for absolute imports (needed for dynamic loading)
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent))
+from group_features import TickerGroupFeatureAggregator
+
 
 class MultiTickerDataLoader:
     """Load and prepare multi-ticker data from BigQuery for TFT training."""
@@ -29,6 +35,7 @@ class MultiTickerDataLoader:
             config_path: Path to config YAML file
             export_temp: If True, export raw data to temp/ directory (for debugging)
         """
+        self.config_path = config_path  # Save for later use
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
         
@@ -38,16 +45,22 @@ class MultiTickerDataLoader:
         
         self.client = bigquery.Client(project=self.project_id)
         
-        # Extract config
-        self.tickers = self.config['data']['tickers']['symbols']
-        self.frequency = self.config['data']['tickers']['frequency']
+        # Data configuration
+        # Get tickers (now a flat list)
+        self.tickers = self.config['data'].get('tickers', [])
+        if not self.tickers:
+            raise ValueError("Config must have 'tickers' list in data section")
+        
+        print(f"Loading {len(self.tickers)} tickers from config")
+        
+        self.frequency = self.config['data']['frequency']
         self.start_date = self.config['data']['start_date']
         self.end_date = self.config['data']['end_date']
         self.lookback = self.config['data']['lookback_window']
         self.horizons = self.config['data']['prediction_horizons']
         
-        self.raw_features = self.config['data']['tickers']['raw_features']
-        self.synthetic_features = self.config['data']['tickers']['synthetic_features']
+        self.raw_features = self.config['data'].get('ticker_raw_features', ['close', 'volume'])
+        self.synthetic_features = self.config['data'].get('ticker_synthetic_features', ['sma_50', 'sma_200'])
         self.target_col = self.config['data']['target']
         
         # GDELT config
@@ -176,15 +189,20 @@ class MultiTickerDataLoader:
         
         return df
     
-    def fetch_agriculture_basket(self) -> pd.DataFrame:
-        """Fetch agriculture basket (WEAT, SOYB, RJA) for target computation."""
+    def fetch_target_basket(self) -> pd.DataFrame:
+        """Fetch target basket tickers for Y label computation."""
         dataset_id = self.config['bigquery']['dataset_id']
         raw_table = self.config['bigquery']['ticker']['raw_table']
         
-        agriculture_tickers = ['WEAT', 'SOYB', 'RJA']
-        ticker_list = "', '".join(agriculture_tickers)
+        # Read target config
+        target_config = self.config['data'].get('target', {})
+        target_tickers = target_config.get('basket_tickers', ['WEAT', 'SOYB', 'RJA'])  # Default fallback
+        target_group = target_config.get('group', 'agriculture')
+        aggregation = target_config.get('aggregation', 'mean')
         
-        print(f"\nFetching agriculture basket for target: {', '.join(agriculture_tickers)}...")
+        ticker_list = "', '".join(target_tickers)
+        
+        print(f"\nFetching {target_group} basket for target: {', '.join(target_tickers)}...")
         
         query = f"""
         SELECT 
@@ -201,25 +219,30 @@ class MultiTickerDataLoader:
         df = self.client.query(query).to_dataframe()
         
         if len(df) == 0:
-            print("⚠️  Warning: No agriculture basket data found!")
-            print(f"   Make sure WEAT, SOYB, RJA are loaded for frequency '{self.frequency}'")
+            print(f"⚠️  Warning: No {target_group} basket data found!")
+            print(f"   Make sure {', '.join(target_tickers)} are loaded for frequency '{self.frequency}'")
             return None
         
         # Pivot to get one column per ticker
         df_pivot = df.pivot(index='timestamp', columns='ticker', values='close')
         
-        # Compute average close price across available tickers (skip NaN)
-        # This ensures we average only available tickers if some are missing
-        df_pivot['agriculture_basket_close'] = df_pivot[agriculture_tickers].mean(axis=1, skipna=True)
+        # Compute aggregation across available tickers (skip NaN)
+        if aggregation == 'mean':
+            df_pivot['target_basket_close'] = df_pivot[target_tickers].mean(axis=1, skipna=True)
+        elif aggregation == 'median':
+            df_pivot['target_basket_close'] = df_pivot[target_tickers].median(axis=1, skipna=True)
+        else:
+            # Default to mean
+            df_pivot['target_basket_close'] = df_pivot[target_tickers].mean(axis=1, skipna=True)
         
-        # Count how many tickers contributed to each average
-        df_pivot['num_tickers_available'] = df_pivot[agriculture_tickers].notna().sum(axis=1)
+        # Count how many tickers contributed to each aggregation
+        df_pivot['num_tickers_available'] = df_pivot[target_tickers].notna().sum(axis=1)
         
-        # Keep only the average column
-        result = df_pivot[['agriculture_basket_close']].reset_index()
+        # Keep only the aggregated column
+        result = df_pivot[['target_basket_close']].reset_index()
         
-        print(f"✅ Fetched {len(result):,} agriculture basket rows")
-        for ticker in agriculture_tickers:
+        print(f"✅ Fetched {len(result):,} {target_group} basket rows")
+        for ticker in target_tickers:
             if ticker in df_pivot.columns:
                 count = df_pivot[ticker].notna().sum()
                 print(f"   {ticker}: {count:,} rows")
@@ -233,22 +256,23 @@ class MultiTickerDataLoader:
         return result
     
     def compute_basket_target(self, ticker_df: pd.DataFrame, basket_df: pd.DataFrame) -> pd.DataFrame:
-        """Join agriculture basket close prices to ticker data for target computation."""
+        """Join target basket close prices to ticker data for target computation."""
         if basket_df is None:
-            print("⚠️  Warning: No agriculture basket data - cannot compute target!")
+            print("⚠️  Warning: No target basket data - cannot compute target!")
             return ticker_df
         
-        print("\nJoining agriculture basket for target computation...")
+        target_group = self.config['data'].get('target', {}).get('group', 'agriculture')
+        print(f"\nJoining {target_group} basket for target computation...")
         
         # Left join to preserve all ticker timestamps
         df = ticker_df.merge(basket_df, on='timestamp', how='left')
         
         # Forward fill missing basket values
-        missing_before = df['agriculture_basket_close'].isnull().sum()
+        missing_before = df['target_basket_close'].isnull().sum()
         if missing_before > 0:
-            df = self.forward_fill_with_stats(df, ['agriculture_basket_close'], context="Agriculture basket")
+            df = self.forward_fill_with_stats(df, ['target_basket_close'], context=f"{target_group.title()} basket")
         
-        print(f"✅ Joined agriculture basket, shape: {df.shape}")
+        print(f"✅ Joined {target_group} basket, shape: {df.shape}")
         
         return df
     
@@ -385,8 +409,8 @@ class MultiTickerDataLoader:
             df = ticker_df
             print("⚠️  GDELT features disabled in config")
         
-        # Fetch and join agriculture basket for target computation
-        basket_df = self.fetch_agriculture_basket()
+        # Fetch and join target basket for Y label computation
+        basket_df = self.fetch_target_basket()
         df = self.compute_basket_target(df, basket_df)
         
         # Filter weekends if configured (after joining all data)
@@ -542,10 +566,10 @@ class MultiTickerDataLoader:
                     feat_values = df.groupby('timestamp')[feat].first()
                     grouped[feat] = grouped['timestamp'].map(feat_values)
             
-            # Add agriculture basket
-            if 'agriculture_basket_close' in df.columns:
-                basket_values = df.groupby('timestamp')['agriculture_basket_close'].first()
-                grouped['agriculture_basket_close'] = grouped['timestamp'].map(basket_values)
+            # Add target basket
+            if 'target_basket_close' in df.columns:
+                basket_values = df.groupby('timestamp')['target_basket_close'].first()
+                grouped['target_basket_close'] = grouped['timestamp'].map(basket_values)
             
             # Update all_features to include ticker-specific columns
             new_features = []
@@ -568,19 +592,59 @@ class MultiTickerDataLoader:
             grouped = df.groupby('timestamp').first().reset_index()
             print(f"   ⚠️  No ticker column found, using first value per timestamp")
         
-        # Store final feature list for metadata
-        self.final_features = all_features
-        
         print(f"   After: {len(grouped):,} rows (one per unique date)")
         print(f"   ✅ Each date now appears exactly once")
+        
+        # ===== Apply Group Feature Aggregation if configured =====
+        feature_type = self.config.get('model', {}).get('feature_type', 'raw')
+        print(f"\n🔍 DEBUG: feature_type = '{feature_type}' (checking if == 'group_signals')")
+        if feature_type == 'group_signals':
+            print(f"\n🔄 Applying group-level feature aggregation...")
+            
+            # Initialize aggregator
+            aggregator = TickerGroupFeatureAggregator(self.config_path)
+            
+            # Compute group features from ticker data
+            group_features_df = aggregator.compute_group_features(grouped)
+            
+            # Merge group features with GDELT and time features
+            # Keep timestamp from grouped
+            merged = pd.DataFrame({'timestamp': grouped['timestamp']})
+            
+            # Add group features
+            for col in group_features_df.columns:
+                merged[col] = group_features_df[col]
+            
+            # Add GDELT and time features if they exist
+            for feat in gdelt_features + time_features:
+                if feat in grouped.columns:
+                    merged[feat] = grouped[feat]
+            
+            # Add target column (target basket for computing returns)
+            if 'target_basket_close' in grouped.columns:
+                merged['target_basket_close'] = grouped['target_basket_close']
+            
+            # Replace grouped with merged data
+            grouped = merged
+            
+            # Update feature list
+            all_features = [col for col in grouped.columns if col != 'timestamp']
+            self.final_features = all_features
+            
+            print(f"   ✅ Generated {len(group_features_df.columns)} group features")
+            print(f"   Total features: {len(all_features)} = {len(group_features_df.columns)} group + {len([f for f in gdelt_features if f in grouped.columns])} GDELT + {len([f for f in time_features if f in grouped.columns])} time")
+        else:
+            # Store final feature list for metadata
+            self.final_features = all_features
         
         feature_data = grouped[all_features].values
         
         # Get target prices for computing true multi-horizon returns
-        # Use agriculture basket if available, otherwise use ticker close price
-        if 'agriculture_basket_close' in grouped.columns:
-            target_prices = grouped['agriculture_basket_close'].values
-            print(f"🌾 Using agriculture basket (WEAT+SOYB+RJA avg) as target")
+        # Use target basket if available, otherwise use ticker close price
+        if 'target_basket_close' in grouped.columns:
+            target_prices = grouped['target_basket_close'].values
+            target_group = self.config['data'].get('target', {}).get('group', 'agriculture')
+            print(f"🌾 Using {target_group} basket as target")
         else:
             target_prices = grouped['close'].values
             print(f"📊 Using ticker close price as target")
@@ -809,10 +873,11 @@ class MultiTickerDataLoader:
         df_raw = df_raw.copy()
         
         # Add target labels (TRUE k-period forward returns)
-        # Use agriculture basket if available, otherwise use first ticker close
-        if 'agriculture_basket_close' in df_raw.columns:
-            target_price_col = 'agriculture_basket_close'
-            print(f"  🌾 Computing targets from agriculture basket")
+        # Use target basket if available, otherwise use first ticker close
+        if 'target_basket_close' in df_raw.columns:
+            target_price_col = 'target_basket_close'
+            target_group = self.config['data'].get('target', {}).get('group', 'agriculture')
+            print(f"  🌾 Computing targets from {target_group} basket")
         else:
             # Find first ticker close column
             close_cols = [c for c in df_raw.columns if c.startswith('close_')]
@@ -947,6 +1012,8 @@ class MultiTickerDataLoader:
         print(f"  train: {len(X_train_raw):,} samples ({len(X_train_raw)/n_samples*100:.1f}%)")
         print(f"  val  : {len(X_val_raw):,} samples ({len(X_val_raw)/n_samples*100:.1f}%)")
         print(f"  test : {len(X_test_raw):,} samples ({len(X_test_raw)/n_samples*100:.1f}%)")
+        
+        # Note: For data augmentation, use AugmentedMultiTickerDataLoader instead
         
         # Normalize ONLY on training data (both features and targets)
         print(f"\n" + "="*80)

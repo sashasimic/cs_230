@@ -15,7 +15,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir cloudml-hypertune && \
-    # Clean up pip cache and unnecessary files
     rm -rf /root/.cache/pip && \
     find /usr/local/lib/python3.10 -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true && \
     find /usr/local/lib/python3.10 -type d -name 'tests' -exec rm -rf {} + 2>/dev/null || true
@@ -25,21 +24,14 @@ COPY configs/ configs/
 COPY scripts/ scripts/
 COPY utils/ utils/
 
-# Copy FinCast submodule (for FinCast-enabled models)
-COPY external/fincast external/fincast
-
-# Install FinCast dependencies and package (if FinCast exists)
-RUN if [ -d external/fincast ]; then \
-        # Install requirements first
-        if [ -f external/fincast/requirement_v2.txt ]; then \
-            pip install --no-cache-dir -r external/fincast/requirement_v2.txt; \
-        fi && \
-        # Install FinCast as editable package
-        pip install --no-cache-dir -e external/fincast; \
-    fi
+# Note: FinCast is excluded via .dockerignore (not needed for current training)
+# If you need FinCast in the future:
+#   1. Remove external/fincast/ from .dockerignore
+#   2. Add back: COPY external/fincast external/fincast
+#   3. Add back: RUN pip install -e external/fincast
 
 # Create necessary directories
-RUN mkdir -p checkpoints models logs external/fincast/checkpoints
+RUN mkdir -p checkpoints models logs
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1

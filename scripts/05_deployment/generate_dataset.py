@@ -71,12 +71,19 @@ def load_data_loader_for_model(model_type: str):
     Raises:
         ValueError: If model type is not supported
     """
+    tft_pipeline_path = Path(__file__).parent.parent / '02_features' / 'tft_pipeline.py'
+
     # Map model types to their data loader paths and class names
     model_loaders = {
         'tft': {
-            'path': Path(__file__).parent.parent / '02_features' / 'tft' / 'tft_data_loader.py',
-            'module_name': 'tft_data_loader',
-            'class_name': 'MultiTickerDataLoader'
+            'path': tft_pipeline_path,
+            'module_name': 'tft_pipeline',
+            'class_name': 'TFTDataPipeline'
+        },
+        'tft-augmented': {
+            'path': tft_pipeline_path,
+            'module_name': 'tft_pipeline',
+            'class_name': 'TFTDataPipeline'  # Same class, checks config
         },
         'decoder_transformer': {
             # Uses same data format as TFT
@@ -109,6 +116,16 @@ def load_data_loader_for_model(model_type: str):
             f"Data loader not found for model type '{model_type}' at: {loader_path}\n"
             f"Please ensure the data loader exists or use a supported model type."
         )
+    
+    # Special handling for augmented loader: load base loader first
+    if model_type == 'tft-augmented':
+        # Load base TFT loader first
+        base_path = Path(__file__).parent.parent / '02_features' / 'tft' / 'tft_data_loader.py'
+        base_spec = importlib.util.spec_from_file_location('tft_data_loader', base_path)
+        base_module = importlib.util.module_from_spec(base_spec)
+        import sys
+        sys.modules['tft_data_loader'] = base_module  # Make it importable
+        base_spec.loader.exec_module(base_module)
     
     # Dynamically import the data loader module
     spec = importlib.util.spec_from_file_location(loader_config['module_name'], loader_path)
@@ -741,6 +758,7 @@ Examples:
     if args.config is None:
         config_map = {
             'tft': 'configs/model_tft_config.yaml',
+            'tft-augmented': 'configs/model_tft_config.yaml',
             'decoder_transformer': 'configs/model_decoder_config.yaml',
             'lstm': 'configs/model_lstm_config.yaml',
             'transformer': 'configs/model_transformer_config.yaml'

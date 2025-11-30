@@ -150,13 +150,20 @@ def train_model(config_path: str, dataset_version: str = None):
     
     train_fn = train_module.train
     
+    # Load config to get model type
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    model_type = config.get('model', {}).get('type', 'tft')
+    
     print("\n" + "="*80)
     print("   Starting TFT Training (Local)")
     print("="*80)
     print(f"\nConfig: {config_path}")
+    print(f"Model type: {model_type}")
     if dataset_version:
-        print(f"Dataset version: {dataset_version}")
-    print(f"Output: models/tft/tft_best.pt")
+        print(f"Dataset version: {model_type}/{dataset_version}")
+        print(f"Dataset path: data/datasets/{model_type}/{dataset_version}/processed")
+    print(f"Output: models/tft/<run_name>/tft_best.pt (run-specific)")
     print()
     
     # Copy versioned dataset to data/processed/ (mimics Vertex AI behavior)
@@ -169,7 +176,8 @@ def train_model(config_path: str, dataset_version: str = None):
     print("\n" + "="*80)
     print("   Training Complete!")
     print("="*80)
-    print(f"\n✅ Model saved to: models/tft/tft_best.pt")
+    print(f"\n✅ Model saved to: models/tft/<run_name>/tft_best.pt")
+    print(f"   (Check training output for actual run name)")
     print(f"📊 Logs saved to: logs/")
 
 

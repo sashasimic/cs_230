@@ -5,6 +5,7 @@ Uses Google's built-in intelligent search instead of grid search
 """
 
 import os
+import yaml
 from pathlib import Path
 from google.cloud import aiplatform
 from google.cloud.aiplatform import hyperparameter_tuning as hpt
@@ -146,10 +147,55 @@ def submit_hyperparameter_tuning_job(
         },
     }]
     
+    # Create labels for easy identification in Experiments UI
+    # Labels must be lowercase, alphanumeric, hyphens, underscores
+    labels = {
+        'model_type': model_type.lower().replace('_', '-'),
+        'job_name': job_name.lower().replace('_', '-'),
+        'job_type': 'hp-tuning',
+    }
+    if dataset_version:
+        labels['dataset_version'] = dataset_version.lower().replace('/', '-').replace('_', '-')
+    
+    # Try to extract date range from dataset metadata (source of truth)
+    try:
+        # Parse dataset version to find metadata file
+        # dataset_version can be "v1" or "model_type/v1"
+        if dataset_version:
+            if '/' in dataset_version:
+                # Already has model_type prefix
+                dataset_path = f"data/datasets/{dataset_version}/processed/metadata.yaml"
+            else:
+                # Add model_type prefix
+                dataset_path = f"data/datasets/{model_type}/{dataset_version}/processed/metadata.yaml"
+            
+            if Path(dataset_path).exists():
+                with open(dataset_path, 'r') as f:
+                    dataset_metadata = yaml.safe_load(f)
+                
+                start_date = dataset_metadata.get('start_date', '')
+                end_date = dataset_metadata.get('end_date', '')
+                
+                if start_date:
+                    # GCP labels: lowercase, alphanumeric, hyphens, underscores only
+                    labels['start_date'] = start_date.replace('/', '-')
+                if end_date:
+                    labels['end_date'] = end_date.replace('/', '-')
+            else:
+                print(f"   ⚠️  Dataset metadata not found: {dataset_path}")
+    except Exception as e:
+        # Non-critical, continue without date labels
+        print(f"   ⚠️  Could not extract date range from dataset: {e}")
+    
+    print(f"\n🏷️  Adding labels for identification:")
+    for key, value in labels.items():
+        print(f"   {key}: {value}")
+    
     # Create custom job for HP tuning
     custom_job = aiplatform.CustomJob(
         display_name=f"{job_name}-base",
         worker_pool_specs=worker_pool_specs,
+        labels=labels,
     )
     
     # Get or create TensorBoard instance (matching submit_job.py pattern)

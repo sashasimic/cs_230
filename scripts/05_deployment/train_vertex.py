@@ -348,8 +348,10 @@ def load_from_dataset_version(version, gcs_bucket=None):
         """Download all blobs with a given prefix to local directory."""
         blobs = list(bucket.list_blobs(prefix=gcs_prefix))
         if not blobs:
+            print(f"   ⚠️  No blobs found with prefix: {gcs_prefix}")
             return False
         
+        print(f"   📁 Found {len(blobs)} files to download from gs://{gcs_bucket}/{gcs_prefix}")
         for blob in blobs:
             if blob.name.endswith('/'):
                 continue  # Skip directory markers
@@ -362,7 +364,9 @@ def load_from_dataset_version(version, gcs_bucket=None):
             local_path.parent.mkdir(parents=True, exist_ok=True)
             
             # Download file
+            print(f"      📥 Downloading {relative_path}...")
             blob.download_to_filename(str(local_path))
+            print(f"      ✓ {relative_path}")
         
         return True
     
@@ -463,22 +467,26 @@ def main():
     
     try:
         # Import training module dynamically (can't use standard import with numeric prefix)
+        # Normalize model type: strip '-augmented' suffix to find base training script
+        # e.g., 'tft-augmented' -> 'tft' (uses tft/tft_train.py)
+        base_model_type = args.model_type.replace('-augmented', '')
+        
         # Look for model-specific training script (e.g., tft/tft_train.py, lstm/lstm_train.py)
-        train_module_path = Path(__file__).parent.parent / '03_training' / args.model_type / f'{args.model_type}_train.py'
+        train_module_path = Path(__file__).parent.parent / '03_training' / base_model_type / f'{base_model_type}_train.py'
         if not train_module_path.exists():
             # Fallback to generic location
-            train_module_path = Path(__file__).parent.parent / '03_training' / f'{args.model_type}_train.py'
+            train_module_path = Path(__file__).parent.parent / '03_training' / f'{base_model_type}_train.py'
         
         if not train_module_path.exists():
             raise FileNotFoundError(f"Training module not found: {train_module_path}")
         
-        spec = importlib.util.spec_from_file_location(f'{args.model_type}_train', train_module_path)
+        spec = importlib.util.spec_from_file_location(f'{base_model_type}_train', train_module_path)
         train_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(train_module)
         train = train_module.train
         
-        # Run training
-        train(temp_config_path)
+        # Run training (pass dataset_version so it loads static features if present)
+        train(temp_config_path, dataset_version=args.dataset_version)
         
         # Load best checkpoint to get metrics
         # Look for model in model_type subdirectory

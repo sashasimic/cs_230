@@ -20,9 +20,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
+from datetime import datetime
 
 # Set PyTorch to single-threaded mode on Mac
 if sys.platform == 'darwin':
@@ -47,16 +47,20 @@ except ImportError as e:
 
 
 class PositionalEncoding(nn.Module):
-    """Sinusoidal positional encoding for transformer (same as decoder transformer)."""
+    """Sinusoidal positional encoding for transformer.
+    
+    Adds positional information to input embeddings to help the model
+    understand temporal ordering. Uses sine and cosine functions of
+    different frequencies (matching decoder implementation).
+    """
     
     def __init__(self, d_model: int, max_len: int = 5000):
         super().__init__()
         
-        import math
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(
-            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+            torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model)
         )
         
         pe[:, 0::2] = torch.sin(position * div_term)
@@ -66,7 +70,8 @@ class PositionalEncoding(nn.Module):
         self.register_buffer("pe", pe)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
+        """Add positional encoding to input.
+        
         Args:
             x: [batch, seq_len, d_model]
         Returns:
@@ -110,6 +115,28 @@ class GatedResidualNetwork(nn.Module):
         
         # Layer norm
         self.layer_norm = nn.LayerNorm(output_dim)
+        
+        # Initialize weights properly (CRITICAL for gradient stability)
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Initialize GRN weights with scaled initialization."""
+        # Scale all linear layers to prevent gradient explosion
+        for module in [self.fc1, self.fc2, self.gate]:
+            if hasattr(module, 'weight'):
+                # Use smaller gain for GRN internal layers
+                nn.init.xavier_uniform_(module.weight, gain=0.5)
+                if hasattr(module, 'bias') and module.bias is not None:
+                    nn.init.zeros_(module.bias)
+        
+        # Skip connection and context projection
+        if self.skip is not None:
+            nn.init.xavier_uniform_(self.skip.weight, gain=1.0)
+            if self.skip.bias is not None:
+                nn.init.zeros_(self.skip.bias)
+        
+        if self.context_dim is not None:
+            nn.init.xavier_uniform_(self.context_fc.weight, gain=0.5)
     
     def forward(self, x: torch.Tensor, context: torch.Tensor = None):
         """Forward pass with optional context.
@@ -127,9 +154,22 @@ class GatedResidualNetwork(nn.Module):
         # Primary path
         hidden = self.elu(self.fc1(x))
         
-        # Add context if provided
+        # Add context if provided (dimension-agnostic)
         if context is not None and self.context_dim is not None:
-            hidden = hidden + self.context_fc(context)
+            context_proj = self.context_fc(context)  # [batch, context_dim] -> [batch, hidden_dim]
+            
+            # Handle different dimension combinations
+            if hidden.dim() == context_proj.dim():
+                # Both same dims: direct addition (e.g., both [batch, hidden_dim])
+                hidden = hidden + context_proj
+            elif hidden.dim() == context_proj.dim() + 1:
+                # hidden has extra time dimension: [batch, time, hidden_dim] vs [batch, hidden_dim]
+                # Broadcast context across time: [batch, 1, hidden_dim] -> [batch, time, hidden_dim]
+                hidden = hidden + context_proj.unsqueeze(1)
+            else:
+                raise ValueError(
+                    f"Unsupported shape combination: hidden {hidden.shape}, context {context_proj.shape}"
+                )
         
         # Gated output
         gate = self.sigmoid(self.gate(hidden))
@@ -142,6 +182,8 @@ class GatedResidualNetwork(nn.Module):
         return output
 
 
+# TickerGroupAggregator removed - grouping now done at data generation time
+
 class VariableSelectionNetwork(nn.Module):
     """Variable Selection Network (VSN) - learns which features are important."""
     
@@ -151,16 +193,26 @@ class VariableSelectionNetwork(nn.Module):
         self.num_vars = num_vars
         self.hidden_dim = hidden_dim
         
-        # Individual variable GRNs
-        self.variable_grns = nn.ModuleList([
-            GatedResidualNetwork(input_dim, hidden_dim, hidden_dim, dropout, context_dim)
-            for _ in range(num_vars)
-        ])
+        # Shared GRN for all variables (more stable than 99 individual GRNs)
+        self.shared_grn = GatedResidualNetwork(input_dim, hidden_dim, hidden_dim, dropout, context_dim)
         
-        # Variable selection weights
+        # Variable selection weights - use two-stage reduction for stability
         flattened_dim = num_vars * hidden_dim
+        intermediate_dim = max(hidden_dim * 2, num_vars * 2)  # Intermediate bottleneck
+        
+        # Layer norm before selection to stabilize large concatenated vectors
+        self.flatten_norm = nn.LayerNorm(flattened_dim)
+        
+        # Two-stage dimensional reduction: 12,672 -> 256 -> 99 (more stable than direct)
+        self.dimension_reduction = nn.Sequential(
+            nn.Linear(flattened_dim, intermediate_dim),
+            nn.LayerNorm(intermediate_dim),
+            nn.ELU(),
+            nn.Dropout(dropout)
+        )
+        
         self.selection_grn = GatedResidualNetwork(
-            flattened_dim, hidden_dim, num_vars, dropout, context_dim
+            intermediate_dim, hidden_dim, num_vars, dropout, context_dim
         )
         self.softmax = nn.Softmax(dim=-1)
     
@@ -187,10 +239,10 @@ class VariableSelectionNetwork(nn.Module):
         else:
             batch, num_vars, _ = variables.shape
         
-        # Process each variable
+        # Process all variables with shared GRN
         processed_vars = []
         for i in range(num_vars):
-            processed = self.variable_grns[i](variables[:, i], context)
+            processed = self.shared_grn(variables[:, i], context)
             processed_vars.append(processed)
         
         # Stack: [batch, num_vars, hidden_dim]
@@ -199,8 +251,14 @@ class VariableSelectionNetwork(nn.Module):
         # Flatten for selection
         flattened = processed_vars.reshape(variables.shape[0], -1)
         
-        # Compute selection weights
-        weights = self.selection_grn(flattened, context)
+        # Normalize flattened vector to stabilize gradients
+        flattened = self.flatten_norm(flattened)
+        
+        # Apply two-stage dimensional reduction (12,672 -> 256)
+        reduced = self.dimension_reduction(flattened)
+        
+        # Compute selection weights from reduced representation
+        weights = self.selection_grn(reduced, context)
         weights = self.softmax(weights)  # [batch, num_vars]
         
         # Apply weights
@@ -237,12 +295,15 @@ class TemporalFusionTransformer(nn.Module):
             self.num_features = len(time_varying_known) + len(time_varying_unknown)
         
         self.hidden_size = config['model']['hidden_size']
-        self.lstm_layers = config['model']['lstm_layers']
+        self.use_lstm = config['model'].get('use_lstm', True)
+        self.lstm_layers = config['model'].get('lstm_layers', 1) if self.use_lstm else 0
+        self.attention_layers = config['model'].get('attention_layers', 1)
         self.attention_heads = config['model']['attention_heads']
         self.dropout = config['model']['dropout']
         self.num_horizons = len(config['data']['prediction_horizons'])
         self.quantiles = config['model'].get('quantiles', [0.5])
         self.num_quantiles = len(self.quantiles)
+        self.use_variable_selection = config['model'].get('use_variable_selection', True)
         
         # For simplicity, treat all features as time-varying unknown
         # In production, you'd separate known vs unknown based on config
@@ -253,43 +314,116 @@ class TemporalFusionTransformer(nn.Module):
         print(f"   - {self.num_horizons} prediction horizons")
         print(f"   - {self.num_quantiles} quantiles: {self.quantiles}")
         
-        # ===== 1. Variable Selection Network (VSN) =====
-        # Learns which input features are important
-        self.variable_selection = VariableSelectionNetwork(
-            input_dim=1,  # Each feature is scalar
-            num_vars=self.num_features,
-            hidden_dim=self.hidden_size,
-            dropout=self.dropout
-        )
-        self.vsn_norm = nn.LayerNorm(self.hidden_size)  # Normalize VSN output
+        # ===== 1. Variable Selection Setup =====
+        # Features are already grouped at data generation time
+        # We now have ~45-60 compact group-level features instead of 99 raw ticker features
+        print(f"\n✅ Using pre-aggregated group features: {self.num_features} features")
         
-        # ===== 2. LSTM Encoder =====
+        # Each feature is already a scalar group-level signal
+        vsn_input_dim = 1  # Each feature is scalar
+        vsn_num_vars = self.num_features
+        
+        # ===== 2. Variable Selection Network (VSN) =====
+        # Conditionally build VSN based on config
+        if self.use_variable_selection:
+            # Learns which input features/groups are important
+            self.variable_selection = VariableSelectionNetwork(
+                input_dim=vsn_input_dim,
+                num_vars=vsn_num_vars,
+                hidden_dim=self.hidden_size,
+                dropout=self.dropout
+            )
+            self.vsn_norm = nn.LayerNorm(self.hidden_size)  # Normalize VSN output
+        else:
+            # Simple linear projection instead of VSN (NO NORM - match decoder!)
+            self.feature_projection = nn.Linear(self.num_features, self.hidden_size)
+        
+        # ===== Positional Encoding & Dropout (Match Decoder) =====
+        # Get lookback window from config
+        lookback = config['data'].get('lookback_window', config['data'].get('lookback', 192))
+        self.pos_encoder = PositionalEncoding(self.hidden_size, max_len=lookback)
+        self.dropout_layer = nn.Dropout(self.dropout)
+        print(f"   ✅ Added positional encoding (max_len={lookback}) and dropout ({self.dropout})")
+        
+        # ===== 2. LSTM Encoder (Optional) =====
         # Processes historical sequence
-        self.lstm_encoder = nn.LSTM(
-            input_size=self.hidden_size,
-            hidden_size=self.hidden_size,
-            num_layers=self.lstm_layers,
-            batch_first=True,
-            dropout=self.dropout if self.lstm_layers > 1 else 0
-        )
-        self.lstm_norm = nn.LayerNorm(self.hidden_size)  # Normalize LSTM output
+        if self.use_lstm:
+            self.lstm_encoder = nn.LSTM(
+                input_size=self.hidden_size,
+                hidden_size=self.hidden_size,
+                num_layers=self.lstm_layers,
+                batch_first=True,
+                dropout=self.dropout if self.lstm_layers > 1 else 0
+            )
+            self.lstm_norm = nn.LayerNorm(self.hidden_size)  # Normalize LSTM output
         
         # ===== 3. Static Enrichment (using GRN) =====
-        # Enriches temporal features with static context
-        self.static_enrichment = GatedResidualNetwork(
-            input_dim=self.hidden_size,
-            hidden_dim=self.hidden_size,
-            output_dim=self.hidden_size,
-            dropout=self.dropout
-        )
+        # Embeddings for static categorical features
+        self.static_features = static_features
+        if static_features:
+            # Get cardinalities from config
+            augment_groups = config['model'].get('augment_groups', [])
+            ticker_groups = config['data'].get('ticker_groups', {})
+            
+            # Count total tickers across augmentation groups
+            total_tickers = 0
+            for group_name in augment_groups:
+                group_tickers = ticker_groups.get(group_name, {}).get('tickers', [])
+                total_tickers += len(group_tickers)
+            
+            # Ticker embedding: one per ticker in augmentation groups
+            ticker_cardinality = total_tickers if total_tickers > 0 else 12
+            # Group embedding: one per augmentation group
+            group_cardinality = len(augment_groups) if augment_groups else 4
+            
+            # Use config value if provided, otherwise default to hidden_size // 4
+            embedding_dim = config['model'].get('static_embedding_dim', self.hidden_size // 4)
+            self.ticker_embedding = nn.Embedding(ticker_cardinality, embedding_dim)
+            self.category_embedding = nn.Embedding(group_cardinality, embedding_dim)  # Still named category for backward compat
+            
+            # Initialize embeddings with smaller values for stability
+            nn.init.normal_(self.ticker_embedding.weight, mean=0.0, std=0.01)
+            nn.init.normal_(self.category_embedding.weight, mean=0.0, std=0.01)
+            
+            static_context_dim = embedding_dim * 2  # Concatenate both embeddings
+            print(f"   - Static features: {len(static_features)}")
+            print(f"     Ticker embedding: {ticker_cardinality} tickers -> {embedding_dim}")
+            print(f"     Group embedding: {group_cardinality} groups ({augment_groups}) -> {embedding_dim}")
+        else:
+            static_context_dim = None
         
-        # ===== 4. Temporal Self-Attention =====
-        # Multi-head attention over time (with causal masking for forecasting)
-        self.temporal_attention = nn.MultiheadAttention(
-            embed_dim=self.hidden_size,
-            num_heads=self.attention_heads,
+        # Static enrichment GRN (optional - can block gradients)
+        self.use_static_enrichment = config['model'].get('use_static_enrichment', False)
+        if self.use_static_enrichment:
+            self.static_enrichment = GatedResidualNetwork(
+                input_dim=self.hidden_size,
+                hidden_dim=self.hidden_size,
+                output_dim=self.hidden_size,
+                dropout=self.dropout,
+                context_dim=static_context_dim
+            )
+            self.enrichment_norm = nn.LayerNorm(self.hidden_size)
+            print(f"   ✅ Static enrichment GRN ENABLED")
+        else:
+            print(f"   ✗ Static enrichment GRN DISABLED (better gradient flow)")
+        
+        # ===== 4. Transformer Encoder (Match Decoder Exactly) =====
+        # Use PyTorch's built-in TransformerEncoder for guaranteed correctness
+        # This includes: attention, feedforward, dropout, residuals, norms
+        dim_feedforward = self.hidden_size * 4  # 384 for hidden_size=96
+        
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_size,
+            nhead=self.attention_heads,
+            dim_feedforward=dim_feedforward,
             dropout=self.dropout,
-            batch_first=True
+            activation='gelu',
+            batch_first=True,
+            norm_first=True  # pre-norm is more stable
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=self.attention_layers
         )
         
         # Register causal mask as buffer (won't be trained)
@@ -300,25 +434,47 @@ class TemporalFusionTransformer(nn.Module):
             self._generate_causal_mask(lookback)
         )
         
-        # Attention output processing
-        self.attention_gate = nn.Linear(self.hidden_size * 2, self.hidden_size)
-        self.attention_sigmoid = nn.Sigmoid()
-        self.attention_norm = nn.LayerNorm(self.hidden_size)
+        # Final norm on encoder output (matching decoder)
+        self.enc_norm = nn.LayerNorm(self.hidden_size)
+        
+        print(f"   ✅ Using TransformerEncoder ({self.attention_layers} layers, pre-norm, matching decoder)")
+        print(f"   ✅ Feedforward dim={dim_feedforward}, GELU activation, dropout={self.dropout}")
         
         # ===== 5. Position-wise Feed-Forward =====
-        self.position_wise_grn = GatedResidualNetwork(
-            input_dim=self.hidden_size,
-            hidden_dim=self.hidden_size,
-            output_dim=self.hidden_size,
-            dropout=self.dropout
+        # Optional GRN (can block gradients)
+        self.use_position_wise_grn = config['model'].get('use_position_wise_grn', False)
+        if self.use_position_wise_grn:
+            self.position_wise_grn = GatedResidualNetwork(
+                input_dim=self.hidden_size,
+                hidden_dim=self.hidden_size,
+                output_dim=self.hidden_size,
+                dropout=self.dropout
+            )
+            print(f"   ✅ Position-wise GRN ENABLED")
+        else:
+            print(f"   ✗ Position-wise GRN DISABLED (better gradient flow)")
+        
+        # ===== 6. Future Decoder (Match Decoder Transformer) =====
+        # GRU-based autoregressive decoder over horizons (instead of independent heads)
+        # This models H1 → H2 → H3 dependencies and distributes gradients better
+        self.future_input_dim = 1  # scalar previous target
+        self.future_hidden_dim = self.hidden_size
+        
+        self.future_in_proj = nn.Linear(self.future_input_dim, self.future_hidden_dim)
+        self.future_decoder = nn.GRU(
+            input_size=self.future_hidden_dim,
+            hidden_size=self.future_hidden_dim,
+            num_layers=1,
+            batch_first=True
         )
         
-        # ===== 6. Quantile Output Heads =====
-        # Separate head for each (horizon, quantile) combination
-        self.quantile_outputs = nn.ModuleList([
-            nn.Linear(self.hidden_size, self.num_quantiles)
-            for _ in range(self.num_horizons)
-        ])
+        # Output projection: hidden state → scalar forecast at each horizon
+        self.future_out_proj = nn.Linear(self.future_hidden_dim, 1)
+        
+        # Learned start token (input at first horizon step)
+        self.start_token = nn.Parameter(torch.zeros(1, self.future_input_dim))
+        
+        print(f"   ✅ Added GRU future decoder (matching decoder transformer)")
         
         # Initialize weights
         self._init_weights()
@@ -336,83 +492,169 @@ class TemporalFusionTransformer(nn.Module):
         mask = mask.masked_fill(mask == 1, float('-inf'))
         return mask
     
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, static_features: torch.Tensor = None, y_future: torch.Tensor = None, teacher_forcing: bool = True):
         """
         TFT Forward pass.
         
         Args:
             x: [batch, lookback, features]
+            static_features: [batch, num_static] - optional static categorical features
+            y_future: [batch, num_horizons] - ground truth targets for teacher forcing (optional)
+            teacher_forcing: if True and y_future provided, use teacher forcing in future decoder
         
         Returns:
-            predictions: [batch, horizons, quantiles] or [batch, horizons] if single quantile
+            predictions: [batch, horizons]
         """
         batch_size, lookback, num_features = x.shape
         
-        # ===== 1. Variable Selection =====
-        # Reshape to [batch, time, num_vars, 1] for VSN
-        x_reshaped = x.unsqueeze(-1)  # [batch, lookback, features, 1]
+        # ===== 1. Variable Selection or Feature Projection =====
+        if self.use_variable_selection:
+            # Features are already group-level signals from data generation
+            # Reshape to [batch, time, num_vars, 1] for VSN
+            x_reshaped = x.unsqueeze(-1)  # [batch, lookback, features, 1]
+            
+            # Apply variable selection to learn feature importance
+            selected_features, var_weights = self.variable_selection(x_reshaped)
+            # selected_features: [batch, lookback, hidden_size]
+            
+            selected_features = self.vsn_norm(selected_features)  # Normalize
+        else:
+            # Simple linear projection without variable selection (no norm - match decoder!)
+            selected_features = self.feature_projection(x)  # [batch, lookback, hidden_size]
         
-        # Apply variable selection to learn feature importance
-        selected_features, var_weights = self.variable_selection(x_reshaped)
-        # selected_features: [batch, lookback, hidden_size]
-        selected_features = self.vsn_norm(selected_features)  # Normalize
+        # ===== Add Positional Encoding & Dropout (Match Decoder) =====
+        # Add temporal position information after initial projection
+        # This helps the model understand the sequential nature of the data
+        selected_features = self.pos_encoder(selected_features)  # [batch, lookback, hidden_size]
+        selected_features = self.dropout_layer(selected_features)  # Apply dropout for regularization
         
-        # ===== 2. LSTM Encoding =====
-        # Encode the full sequence
-        lstm_output, (hidden, cell) = self.lstm_encoder(selected_features)
-        # lstm_output: [batch, lookback, hidden_size]
-        lstm_output = self.lstm_norm(lstm_output)  # Normalize
-        temporal_features = lstm_output
+        # ===== 2. LSTM Encoding (Optional) =====
+        if self.use_lstm:
+            # Encode the full sequence
+            lstm_output, (hidden, cell) = self.lstm_encoder(selected_features)
+            # lstm_output: [batch, lookback, hidden_size]
+            lstm_output = self.lstm_norm(lstm_output)  # Normalize
+            temporal_features = lstm_output
+        else:
+            # Skip LSTM, use projected features directly
+            temporal_features = selected_features
         
         # ===== 3. Static Enrichment =====
-        # Apply GRN to enrich features (no actual static features in our case)
-        enriched = self.static_enrichment(temporal_features)
+        # Create static context from embeddings if available
+        static_context = None
+        if static_features is not None and self.static_features:
+            # static_features: [batch, 2] where column 0=ticker_idx, column 1=category_idx
+            ticker_indices = static_features[:, 0]  # [batch]
+            category_indices = static_features[:, 1]  # [batch]
+            
+            # Embed and concatenate
+            ticker_emb = self.ticker_embedding(ticker_indices)  # [batch, emb_dim]
+            category_emb = self.category_embedding(category_indices)  # [batch, emb_dim]
+            static_context = torch.cat([ticker_emb, category_emb], dim=-1)  # [batch, 2*emb_dim]
+        
+        # Apply GRN to enrich features with static context (if enabled)
+        if self.use_static_enrichment:
+            enriched = self.static_enrichment(temporal_features, context=static_context)
+            enriched = self.enrichment_norm(enriched)  # Normalize to stabilize gradients
+        else:
+            enriched = temporal_features  # Skip enrichment
         # enriched: [batch, lookback, hidden_size]
         
-        # ===== 4. Temporal Self-Attention =====
-        # Apply multi-head attention over time with causal masking
-        attn_output, attn_weights = self.temporal_attention(
-            enriched, enriched, enriched,
-            attn_mask=self.causal_mask  # Prevent looking at future
-        )
-        # attn_output: [batch, lookback, hidden_size]
+        # ===== 4. Transformer Encoder =====
+        # Use PyTorch built-in encoder (identical to decoder)
+        # Causal mask prevents attending to future positions
+        batch_size, seq_len, _ = enriched.shape
+        mask = self.causal_mask[:seq_len, :seq_len]  # [T, T]
         
-        # Gated residual connection
-        gate_input = torch.cat([enriched, attn_output], dim=-1)
-        gate = self.attention_sigmoid(self.attention_gate(gate_input))
-        gated_output = gate * attn_output + (1 - gate) * enriched
-        gated_output = self.attention_norm(gated_output)
+        encoded = self.transformer_encoder(enriched, mask=mask)  # [batch, lookback, hidden_size]
         
         # ===== 5. Position-wise Processing =====
-        # Apply GRN to each timestep
-        processed = self.position_wise_grn(gated_output)
+        # Apply GRN to each timestep (if enabled)
+        if self.use_position_wise_grn:
+            processed = self.position_wise_grn(encoded)
+        else:
+            processed = encoded  # Skip position-wise GRN
         # processed: [batch, lookback, hidden_size]
         
-        # ===== 6. Quantile Predictions =====
-        # Use last timestep for multi-horizon forecasting
-        final_repr = processed[:, -1, :]  # [batch, hidden_size]
+        # ===== 6. Final Norm + Extract Context =====
+        # Normalize encoder output (matching decoder)
+        processed = self.enc_norm(processed)
         
-        # Generate quantile predictions for each horizon
-        all_predictions = []
-        for horizon_idx in range(self.num_horizons):
-            quantile_preds = self.quantile_outputs[horizon_idx](final_repr)
-            # quantile_preds: [batch, num_quantiles]
-            all_predictions.append(quantile_preds)
+        # Use last timestep as context for GRU decoder
+        context = processed[:, -1, :]  # [batch, hidden_size]
         
-        # Stack: [batch, horizons, quantiles]
-        predictions = torch.stack(all_predictions, dim=1)
+        # Decode future horizons autoregressively (matching decoder transformer)
+        batch_size = context.size(0)
+        device = context.device
         
-        # If single quantile (median), squeeze last dimension for compatibility
-        if self.num_quantiles == 1:
-            predictions = predictions.squeeze(-1)  # [batch, horizons]
+        # Initial hidden state from encoder context
+        h0 = context.unsqueeze(0)  # [1, batch, hidden_size]
+        
+        # Start token
+        start = self.start_token.expand(batch_size, 1, self.future_input_dim)
+        
+        if y_future is not None and teacher_forcing:
+            # Teacher forcing: use ground truth as inputs
+            H = self.num_horizons
+            
+            if H > 1:
+                # Build input: [start, y_0, y_1, ..., y_{H-2}]
+                prev_targets = y_future[:, :-1].unsqueeze(-1)  # [batch, H-1, 1]
+                dec_in = torch.cat([start, prev_targets], dim=1)  # [batch, H, 1]
+            else:
+                dec_in = start  # [batch, 1, 1]
+            
+            # Embed inputs
+            dec_in = self.future_in_proj(dec_in)  # [batch, H, hidden_size]
+            
+            # Run GRU over horizons
+            dec_out, _ = self.future_decoder(dec_in, h0)  # [batch, H, hidden_size]
+            
+            # Project to scalar at each horizon
+            predictions = self.future_out_proj(dec_out).squeeze(-1)  # [batch, H]
+        else:
+            # Pure autoregressive (inference mode)
+            preds = []
+            h_t = h0
+            prev_input = start
+            
+            for t in range(self.num_horizons):
+                # Embed previous target
+                dec_in = self.future_in_proj(prev_input)  # [batch, 1, hidden_size]
+                
+                # GRU step
+                dec_out, h_t = self.future_decoder(dec_in, h_t)  # [batch, 1, hidden_size]
+                
+                # Predict next horizon
+                y_t = self.future_out_proj(dec_out).squeeze(-1)  # [batch, 1]
+                preds.append(y_t)
+                
+                # Use prediction as next input
+                prev_input = y_t.unsqueeze(-1)  # [batch, 1, 1]
+            
+            predictions = torch.cat(preds, dim=1)  # [batch, H]
         
         return predictions
     
     def _init_weights(self):
-        """Initialize weights using Xavier initialization."""
+        """Initialize weights using Xavier/Glorot initialization (matching decoder exactly)."""
         for name, param in self.named_parameters():
-            if 'weight' in name and len(param.shape) >= 2:
-                nn.init.xavier_uniform_(param)
+            # Skip GRN layers - they handle their own initialization
+            if any(x in name for x in ['static_enrichment', 'position_wise_grn']):
+                continue
+            
+            # Skip TransformerEncoder - it has optimized PyTorch defaults
+            if 'transformer_encoder' in name:
+                continue
+            
+            if 'weight' in name and param.dim() >= 2:
+                # Scale input projection like decoder does
+                if 'feature_projection' in name:
+                    scale = 1.0 / np.sqrt(self.num_features)
+                    nn.init.xavier_uniform_(param, gain=scale)
+                else:
+                    # All other layers: use default xavier (matching decoder)
+                    nn.init.xavier_uniform_(param)
             elif 'bias' in name:
                 nn.init.zeros_(param)
 
@@ -439,9 +681,11 @@ def compute_layer_grad_stats(model: nn.Module) -> dict:
             grad_std = param.grad.data.std().item() if param.grad.data.numel() > 1 else 0.0
             grad_max = param.grad.data.abs().max().item()
             
-            # Group by layer type
+            # Group by layer type (match decoder's per-layer breakdown)
             if 'variable_selection' in name or 'variable_grns' in name:
                 layer_type = 'VSN'
+            elif 'feature_projection' in name and 'weight' in name:
+                layer_type = 'Input'
             elif 'static_enrichment' in name or 'position_wise_grn' in name:
                 layer_type = 'GRN'
             elif 'lstm_encoder' in name:
@@ -453,31 +697,44 @@ def compute_layer_grad_stats(model: nn.Module) -> dict:
                     layer_type = 'LSTM_L2'
                 else:
                     layer_type = 'LSTM_Other'
-            elif 'temporal_attention' in name or 'attention_gate' in name or 'attention_norm' in name:
-                layer_type = 'Attention'
+            elif 'transformer_encoder.layers' in name:
+                # TransformerEncoder layers (matching decoder)
+                parts = name.split('.')
+                layer_idx = parts[2] if len(parts) > 2 else '?'
+                # Break out attention vs feedforward within each encoder layer
+                if 'self_attn' in name:
+                    layer_type = f'Attention_L{layer_idx}'
+                elif 'linear1' in name or 'linear2' in name:
+                    layer_type = f'Feedforward_L{layer_idx}'
+                elif 'norm1' in name or 'norm2' in name:
+                    # Norms contribute to the attention/ff layers they're part of
+                    if 'norm1' in name:
+                        layer_type = f'Attention_L{layer_idx}'
+                    else:
+                        layer_type = f'Feedforward_L{layer_idx}'
+                else:
+                    layer_type = f'Encoder_L{layer_idx}_Other'
+            elif 'enc_norm' in name:
+                layer_type = 'EncoderNorm'
+            elif 'future_decoder' in name or 'future_in_proj' in name or 'future_out_proj' in name or 'start_token' in name:
+                # Future decoder (GRU-based autoregressive decoder)
+                layer_type = 'FutureDecoder'
             elif 'quantile_outputs' in name:
                 layer_type = 'Output'
+            elif 'pos_encoder' in name:
+                layer_type = 'PosEnc'
             else:
                 layer_type = 'Other'
             
             if layer_type not in layer_stats:
-                layer_stats[layer_type] = {'norms': [], 'means': [], 'stds': [], 'maxs': []}
+                layer_stats[layer_type] = {'norm': 0.0, 'max': 0.0, 'std': 0.0}
             
-            layer_stats[layer_type]['norms'].append(grad_norm)
-            layer_stats[layer_type]['means'].append(grad_mean)
-            layer_stats[layer_type]['stds'].append(grad_std)
-            layer_stats[layer_type]['maxs'].append(grad_max)
+            # Aggregate like decoder does: sum norms, max for max/std
+            layer_stats[layer_type]['norm'] += grad_norm
+            layer_stats[layer_type]['max'] = max(layer_stats[layer_type]['max'], grad_max)
+            layer_stats[layer_type]['std'] = max(layer_stats[layer_type]['std'], grad_std)
     
-    # Aggregate statistics
-    aggregated = {}
-    for layer_type, stats in layer_stats.items():
-        aggregated[layer_type] = {
-            'avg_norm': np.mean(stats['norms']),
-            'max_norm': np.max(stats['norms']),
-            'avg_std': np.mean(stats['stds'])
-        }
-    
-    return aggregated
+    return layer_stats
 
 
 def compute_metrics(predictions: torch.Tensor, targets: torch.Tensor, horizons: list = None) -> Dict[str, float]:
@@ -526,7 +783,7 @@ def compute_metrics(predictions: torch.Tensor, targets: torch.Tensor, horizons: 
         return metrics
 
 
-def train_epoch(model: nn.Module, dataloader, criterion, optimizer, device, epoch: int = 0, clip_norm: float = 1.0) -> dict:
+def train_epoch(model: nn.Module, dataloader, criterion, optimizer, device, epoch: int = 0, clip_norm: float = 1.0, has_static_features: bool = False) -> dict:
     """Train for one epoch and return detailed metrics (matches decoder transformer)."""
     model.train()
     total_loss = 0.0
@@ -537,12 +794,15 @@ def train_epoch(model: nn.Module, dataloader, criterion, optimizer, device, epoc
     total_batches = len(dataloader)
     print(f"\n  Training: 0/{total_batches} batches", end='', flush=True)
     
-    for batch_idx, (batch_X, batch_y) in enumerate(dataloader):
+    for batch_idx, batch in enumerate(dataloader):
+        # Always 3 items: (X, y, static) - static may be empty placeholder
+        batch_X, batch_y, batch_static = batch
         batch_X = batch_X.to(device)
         batch_y = batch_y.to(device)
+        batch_static = batch_static.to(device) if has_static_features else None
         
         optimizer.zero_grad()
-        predictions = model(batch_X)
+        predictions = model(batch_X, static_features=batch_static, y_future=batch_y, teacher_forcing=True)
         loss = criterion(predictions, batch_y)
         loss.backward()
         
@@ -603,13 +863,29 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     
+    # Set random seeds for reproducibility (if configured)
+    if 'seed' in config:
+        seed = config['seed']
+        print(f"🎲 Setting random seed: {seed}")
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+    
+    # Initialize static features flag (will be set based on data loading path)
+    has_static_features = False
+    
     # Load data if not provided
     if dataloaders is None:
         # Always use data/processed/ (unified behavior for local and Vertex AI)
         # Local: Copied from versioned dataset by *_train_local.py
         # Vertex AI: Downloaded from GCS by train_vertex.py
+        data_path = Path('data/processed')  # Define here for both branches
+        
         if dataset_version:
-            data_path = Path('data/processed')
             print(f"\n📂 Loading data from: {data_path}...")
             
             if not data_path.exists():
@@ -620,7 +896,6 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
                 )
             
             # Load preprocessed arrays directly
-            import numpy as np
             from torch.utils.data import TensorDataset, DataLoader
             
             train_X_np = np.load(data_path / 'X_train.npy', allow_pickle=True)
@@ -629,6 +904,33 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
             val_y_np = np.load(data_path / 'y_val.npy', allow_pickle=True)
             test_X_np = np.load(data_path / 'X_test.npy', allow_pickle=True)
             test_y_np = np.load(data_path / 'y_test.npy', allow_pickle=True)
+            
+            # Load static features if available (for augmented datasets)
+            static_train_np = None
+            static_val_np = None
+            static_test_np = None
+            has_static_features = False
+            
+            # Debug: List files in data_path to verify static files were downloaded
+            print(f"  🔍 Files in {data_path}:")
+            for f in sorted(data_path.glob('*.npy')):
+                print(f"     - {f.name}")
+            
+            if (data_path / 'static_train.npy').exists():
+                # Check config to see if static features are enabled
+                config_static_features = config['model'].get('static_features', [])
+                has_static_features = len(config_static_features) > 0
+                
+                if has_static_features:
+                    # Only load if enabled in config
+                    static_train_np = np.load(data_path / 'static_train.npy', allow_pickle=True)
+                    static_val_np = np.load(data_path / 'static_val.npy', allow_pickle=True)
+                    static_test_np = np.load(data_path / 'static_test.npy', allow_pickle=True)
+                    print(f"  ✅ Loaded static features: train{static_train_np.shape}, val{static_val_np.shape}, test{static_test_np.shape}")
+                else:
+                    # Keep as None when disabled (matching decoder)
+                    print(f"  ⚠️  Static feature files exist but DISABLED in config (static_features=[])")
+                    print(f"     Will pass None to model (matching decoder)")
             
             # Handle object dtype
             if train_X_np.dtype == object:
@@ -652,11 +954,58 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
             test_X = torch.tensor(test_X_np, dtype=torch.float32)
             test_y = torch.tensor(test_y_np, dtype=torch.float32)
             
+            # Convert static features to tensors if present
+            if static_train_np is not None:
+                # Static features are saved as strings, need to convert to indices
+                # Get mappings from config
+                augment_groups = config['model'].get('augment_groups', [])
+                ticker_groups = config['data'].get('ticker_groups', {})
+                
+                # Build ticker list and group mapping
+                augment_tickers = []
+                ticker_to_group = {}
+                for group_name in augment_groups:
+                    group_tickers = ticker_groups.get(group_name, {}).get('tickers', [])
+                    augment_tickers.extend(group_tickers)
+                    for ticker in group_tickers:
+                        ticker_to_group[ticker] = group_name
+                
+                # Create ticker -> index mapping
+                ticker_to_idx = {ticker: idx for idx, ticker in enumerate(augment_tickers)}
+                # Create group -> index mapping (groups are used as categories)
+                group_to_idx = {group: idx for idx, group in enumerate(augment_groups)}
+                
+                # Convert string arrays to index arrays
+                def convert_static_to_indices(static_np):
+                    result = np.zeros(static_np.shape, dtype=np.int64)
+                    for i in range(len(static_np)):
+                        ticker_str = static_np[i, 0]
+                        group_str = static_np[i, 1]  # Now stores group name instead of old category
+                        result[i, 0] = ticker_to_idx.get(ticker_str, 0)
+                        result[i, 1] = group_to_idx.get(group_str, 0)
+                    return result
+                
+                train_static_indices = convert_static_to_indices(static_train_np)
+                val_static_indices = convert_static_to_indices(static_val_np)
+                test_static_indices = convert_static_to_indices(static_test_np)
+                
+                train_static = torch.tensor(train_static_indices, dtype=torch.long)
+                val_static = torch.tensor(val_static_indices, dtype=torch.long)
+                test_static = torch.tensor(test_static_indices, dtype=torch.long)
+            
             # Create datasets and dataloaders
+            # Always use 3-tuple format (X, y, static) for consistency
+            # Use zero-filled placeholder tensors when static features not present
             batch_size = config['training']['batch_size']
-            train_dataset = TensorDataset(train_X, train_y)
-            val_dataset = TensorDataset(val_X, val_y)
-            test_dataset = TensorDataset(test_X, test_y)
+            if static_train_np is None:
+                # Create dummy static tensors (will be ignored by model when None passed)
+                train_static = torch.zeros((len(train_X), 2), dtype=torch.long)
+                val_static = torch.zeros((len(val_X), 2), dtype=torch.long)
+                test_static = torch.zeros((len(test_X), 2), dtype=torch.long)
+            
+            train_dataset = TensorDataset(train_X, train_y, train_static)
+            val_dataset = TensorDataset(val_X, val_y, val_static)
+            test_dataset = TensorDataset(test_X, test_y, test_static)
             
             dataloaders = {
                 'train': DataLoader(train_dataset, batch_size=batch_size, shuffle=True),
@@ -666,19 +1015,12 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
             scalers = None  # Scalers not available when loading from numpy
             print("✅ Data loaded!")
         else:
-            # Use existing create_data_loaders for default behavior
-            print("\n📂 Loading data from data/processed/...")
-            import importlib.util
-            data_loader_path = project_root / 'scripts' / '02_features' / 'tft' / 'tft_data_loader.py'
-            spec = importlib.util.spec_from_file_location('tft_data_loader', data_loader_path)
-            data_loader_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(data_loader_module)
-            
-            dataloaders, scalers = data_loader_module.create_data_loaders(
-                config_path=config_path,
-                force_refresh=False
+            # No preprocessed data found
+            raise FileNotFoundError(
+                f"No preprocessed data found in {data_path}.\n"
+                f"Please generate dataset first using:\n"
+                f"  python scripts/05_deployment/generate_dataset.py --model-type tft-augmented --config {config_path}"
             )
-            print("✅ Data loaded!")
     
     # Print detailed feature information
     print("\n" + "="*80)
@@ -687,7 +1029,8 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     
     # Get sample batch to determine actual feature count
     sample_batch = next(iter(dataloaders['train']))
-    batch_X, batch_y = sample_batch
+    # Always 3 items: (X, y, static) - static may be empty placeholder
+    batch_X, batch_y, _ = sample_batch
     num_features = batch_X.shape[2]
     lookback = batch_X.shape[1]
     num_horizons = batch_y.shape[1]
@@ -696,6 +1039,9 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     print(f"  Lookback window: {lookback} timesteps")
     print(f"  Number of features: {num_features}")
     print(f"  Prediction horizons: {num_horizons}")
+    
+    # Update config with actual lookback from data (important for causal mask sizing)
+    config['data']['lookback_window'] = lookback
     
     # Display date range from metadata (actual data) and sample counts
     try:
@@ -749,9 +1095,18 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     for i, feat in enumerate(time_varying_unknown, 1):
         print(f"  {i:2d}. {feat}")
     
+    # Display static features if configured
+    static_features = config['model'].get('static_features', [])
+    if static_features:
+        print(f"\n📌 STATIC Features ({len(static_features)}):")
+        for i, feat in enumerate(static_features, 1):
+            print(f"  {i:2d}. {feat}")
+    
     total_config_features = len(time_varying_known) + len(time_varying_unknown)
     print(f"\n➡️  Total Features (config): {total_config_features}")
     print(f"➡️  Total Features (actual data): {num_features}")
+    if static_features:
+        print(f"➡️  Static Features: {len(static_features)}")
     
     # Load and print actual final features being used
     # Note: Config shows 14 base features, but data has more after pivoting (e.g., close_SPY, close_QQQ)
@@ -821,10 +1176,24 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     print("="*80)
     print(f"\nArchitecture: Temporal Fusion Transformer (TFT)")
     print(f"  Components:")
-    print(f"    - Variable Selection Network (VSN)")
-    print(f"    - LSTM Encoder ({model_config['lstm_layers']} layers)")
+    use_vsn = model_config.get('use_variable_selection', True)
+    if use_vsn:
+        print(f"    - Variable Selection Network (VSN) ✓")
+    else:
+        print(f"    - Variable Selection Network (VSN) ✗ DISABLED")
+        print(f"    - Linear Feature Projection (VSN replacement)")
+    
+    use_lstm = model_config.get('use_lstm', True)
+    if use_lstm:
+        lstm_layers = model_config.get('lstm_layers', 1)
+        print(f"    - LSTM Encoder ({lstm_layers} layer{'s' if lstm_layers > 1 else ''})")
+    else:
+        print(f"    - LSTM Encoder ✗ DISABLED")
+    
     print(f"    - Gated Residual Networks (GRN)")
-    print(f"    - Temporal Self-Attention ({model_config['attention_heads']} heads)")
+    
+    attention_layers = model_config.get('attention_layers', 1)
+    print(f"    - Temporal Self-Attention ({model_config['attention_heads']} heads, {attention_layers} layer{'s' if attention_layers > 1 else ''})")
     print(f"    - Quantile Output Heads")
     print(f"  Hidden size: {model_config['hidden_size']}")
     print(f"  Dropout: {model_config['dropout']}")
@@ -863,8 +1232,9 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     additional_model_info = {
         'Model Type': 'Temporal Fusion Transformer',
         'Hidden Size': model_config['hidden_size'],
-        'LSTM Layers': model_config['lstm_layers'],
+        'LSTM Layers': model_config.get('lstm_layers', 0),
         'Attention Heads': model_config['attention_heads'],
+        'Attention Layers': model_config.get('attention_layers', 1),
         'Dropout': model_config['dropout'],
         'Total Parameters': f"{total_params:,}",
         'Trainable Parameters': f"{trainable_params:,}"
@@ -905,9 +1275,18 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
             print(f"   Patience: {scheduler_config.get('patience', 5)}")
             print(f"   Min LR: {scheduler_config.get('min_lr', 0.00001)}")
     
-    # Create output directory
-    output_dir = Path('models/tft')
+    # Create unique output directory per run
+    # Get run name from config or generate timestamp-based one
+    run_name = config.get('logging', {}).get('run_name')
+    if run_name is None:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        run_name = f"run_{timestamp}"
+    
+    output_dir = Path('models/tft') / run_name
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"\n📁 Output directory: {output_dir}")
+    print(f"   Run name: {run_name}")
     
     # Training loop
     # Training loop configuration
@@ -942,7 +1321,7 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
         # Training phase
         train_results = train_epoch(
             model, dataloaders['train'], criterion, optimizer, device, 
-            epoch=epoch+1, clip_norm=clip_norm
+            epoch=epoch+1, clip_norm=clip_norm, has_static_features=has_static_features
         )
         train_loss = train_results['loss']
         avg_unclipped = train_results['avg_unclipped']
@@ -962,11 +1341,14 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
         print(f"  Validation: 0/{total_val_batches} batches", end='', flush=True)
         
         with torch.no_grad():
-            for batch_idx, (batch_X, batch_y) in enumerate(dataloaders['val']):
+            for batch_idx, batch in enumerate(dataloaders['val']):
+                # Always 3 items: (X, y, static) - static may be empty placeholder
+                batch_X, batch_y, batch_static = batch
                 batch_X = batch_X.to(device)
                 batch_y = batch_y.to(device)
+                batch_static = batch_static.to(device) if has_static_features else None
                 
-                predictions = model(batch_X)
+                predictions = model(batch_X, static_features=batch_static)
                 loss = criterion(predictions, batch_y)
                 
                 val_loss += loss.item()
@@ -1008,7 +1390,7 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
             for layer_name in ['VSN', 'Input', 'LSTM_L0', 'LSTM_L1', 'LSTM_L2', 'Attention', 'Feedforward', 'Output']:
                 if layer_name in layer_grad_stats:
                     stats = layer_grad_stats[layer_name]
-                    print(f"    {layer_name:12s}: norm={stats['avg_norm']:.4f}, max={stats['max_norm']:.4f}, std={stats['avg_std']:.4f}")
+                    print(f"    {layer_name:12s}: norm={stats['norm']:.4f}, max={stats['max']:.4f}, std={stats['std']:.4f}")
         
         # Log to TensorBoard
         try:
@@ -1032,17 +1414,41 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
             traceback.print_exc()
         
         # Log gradient and weight histograms to TensorBoard (every 10 epochs)
-        # NOTE: Disabled for HP tuning to avoid potential crashes with GCS-backed writers
-        # if (epoch + 1) % 10 == 0:
-        #     try:
-        #         tb_utils.log_gradients_and_weights(writer, model, epoch)
-        #         if writer is not None:
-        #             writer.flush()
-        #         print(f"  ✅ Logged histograms")
-        #     except Exception as e:
-        #         print(f"  ⚠️  ERROR logging histograms: {e}")
-        #         import traceback
-        #         traceback.print_exc()
+        if (epoch + 1) % 10 == 0:
+            try:
+                # Get a fresh batch and compute gradients
+                model.train()
+                for X_batch, y_batch, static_batch in dataloaders['train']:
+                    X_batch = X_batch.to(device)
+                    y_batch = y_batch.to(device)
+                    static_batch = static_batch.to(device) if static_batch is not None else None
+                    
+                    optimizer.zero_grad()
+                    predictions = model(X_batch, static_features=static_batch, y_future=y_batch, teacher_forcing=True)
+                    loss = criterion(predictions, y_batch)
+                    loss.backward()
+                    break  # Only need one batch for histogram
+                
+                # Compute detailed layer-wise gradient stats
+                layer_stats = compute_layer_grad_stats(model)
+                print("  Layer Gradients (detailed):")
+                for layer_name, stats in sorted(layer_stats.items()):
+                    print(
+                        f"    {layer_name:15s}: "
+                        f"norm={stats['norm']:.6f}, "
+                        f"max={stats['max']:.6f}, "
+                        f"std={stats['std']:.6f}"
+                    )
+                
+                # Log histograms to TensorBoard
+                tb_utils.log_gradients_and_weights(writer, model, epoch)
+                if writer is not None:
+                    writer.flush()
+                print(f"  ✅ Logged gradient/weight histograms to TensorBoard")
+            except Exception as e:
+                print(f"  ⚠️  ERROR logging histograms: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Learning rate scheduler step (if enabled)
         if scheduler is not None:
@@ -1095,11 +1501,14 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     
     print(f"  Evaluating on test set...")
     with torch.no_grad():
-        for batch_X, batch_y in dataloaders['test']:
+        for batch in dataloaders['test']:
+            # Always 3 items: (X, y, static) - static may be empty placeholder
+            batch_X, batch_y, batch_static = batch
             batch_X = batch_X.to(device)
             batch_y = batch_y.to(device)
+            batch_static = batch_static.to(device) if has_static_features else None
             
-            predictions = model(batch_X)
+            predictions = model(batch_X, static_features=batch_static)
             loss = criterion(predictions, batch_y)
             
             test_loss += loss.item()
@@ -1131,7 +1540,7 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     hparams = {
         'model': 'TFT',
         'hidden_size': model_config['hidden_size'],
-        'lstm_layers': model_config['lstm_layers'],
+        'lstm_layers': model_config.get('lstm_layers', 1),
         'attention_heads': model_config['attention_heads'],
         'dropout': model_config['dropout'],
         'lookback': lookback,
