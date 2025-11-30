@@ -334,9 +334,11 @@ class TemporalFusionTransformer(nn.Module):
                 dropout=self.dropout
             )
             self.vsn_norm = nn.LayerNorm(self.hidden_size)  # Normalize VSN output
+            print(f"   ✅ Variable Selection Network (VSN) ENABLED")
         else:
             # Simple linear projection instead of VSN (NO NORM - match decoder!)
             self.feature_projection = nn.Linear(self.num_features, self.hidden_size)
+            print(f"   ✗ Variable Selection Network (VSN) DISABLED (using linear projection)")
         
         # ===== Positional Encoding & Dropout (Match Decoder) =====
         # Get lookback window from config

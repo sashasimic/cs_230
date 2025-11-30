@@ -100,8 +100,8 @@ data:
   # DATA AUGMENTATION CONFIGURATION
   # ============================================================
   # Which ticker groups to use for creating training variants
-  # DISABLED to match decoder transformer (no augmentation)
-  ticker_augment_groups: []  # Empty = no augmentation
+  # ENABLED for v8: Create multiple samples per date using agriculture tickers
+  ticker_augment_groups: [agriculture]  # Will create ~3x more training samples
   
   # Shared frequency for all tickers
   frequency: 'daily'
@@ -212,7 +212,7 @@ data:
   # Strategy: Create N samples per date by varying augmentation group tickers
   # Groups to augment are specified in data.ticker_augment_groups
   augmentation:
-    enabled: false  # Disabled to match decoder transformer
+    enabled: true   # ENABLED for v8 dataset
     seed: 42
 
 # Model Architecture
@@ -304,12 +304,12 @@ model:
     - is_weekend
 
   hidden_size: 96   # Architecture components (granular control)
-  use_variable_selection: false  # Disabled for simplicity (use linear projection)
-  use_lstm: true                 # Enable LSTM encoder
+  use_variable_selection: false  # Disable VSN - test baseline on augmented data first
+  use_lstm: false                # Disable LSTM - simpler baseline
   lstm_layers: 1                 # Number of stacked LSTM layers (1 or 2 recommended)
-  use_augmentation: false        # No augmented features
+  use_augmentation: false        # No augmented features (data augmentation controlled separately)
   use_static_enrichment: false   # DISABLE: Blocks gradients before attention
-  use_position_wise_grn: true   # DISABLE: Blocks gradients after attention
+  use_position_wise_grn: false   # Disable GRN - test pure baseline on augmented data
   
   # Attention configuration
   attention_heads: 8
