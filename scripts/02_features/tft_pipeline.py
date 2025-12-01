@@ -112,28 +112,91 @@ class TFTDataPipeline:
         
         # 3. Split data temporally
         print("\n[3/7] Splitting data...")
-        n_samples = len(X)
-        train_ratio = self.config['data']['train_ratio']
-        val_ratio = self.config['data']['val_ratio']
         
-        train_end = int(n_samples * train_ratio)
-        val_end = int(n_samples * (train_ratio + val_ratio))
+        # For augmented data, split WITHIN each ticker to ensure all tickers in all splits
+        if 'inflation_ticker' in df_pivoted.columns:
+            print(f"   ⚙️  Augmented data - splitting per ticker to maintain diversity\n")
+            
+            X_train, X_val, X_test = [], [], []
+            y_train, y_val, y_test = [], [], []
+            ts_train, ts_val, ts_test = [], [], []
+            static_train, static_val, static_test = [], [], []
+            
+            train_ratio = self.config['data']['train_ratio']
+            val_ratio = self.config['data']['val_ratio']
+            
+            # Split each ticker's data temporally
+            for ticker_id in np.unique(static[:, 0]):
+                ticker_mask = static[:, 0] == ticker_id
+                ticker_indices = np.where(ticker_mask)[0]
+                
+                n_ticker = len(ticker_indices)
+                train_end = int(n_ticker * train_ratio)
+                val_end = int(n_ticker * (train_ratio + val_ratio))
+                
+                # Split this ticker's sequences
+                ticker_train_idx = ticker_indices[:train_end]
+                ticker_val_idx = ticker_indices[train_end:val_end]
+                ticker_test_idx = ticker_indices[val_end:]
+                
+                X_train.extend([X[i] for i in ticker_train_idx])
+                X_val.extend([X[i] for i in ticker_val_idx])
+                X_test.extend([X[i] for i in ticker_test_idx])
+                
+                y_train.extend([y[i] for i in ticker_train_idx])
+                y_val.extend([y[i] for i in ticker_val_idx])
+                y_test.extend([y[i] for i in ticker_test_idx])
+                
+                ts_train.extend([ts[i] for i in ticker_train_idx])
+                ts_val.extend([ts[i] for i in ticker_val_idx])
+                ts_test.extend([ts[i] for i in ticker_test_idx])
+                
+                static_train.extend([static[i] for i in ticker_train_idx])
+                static_val.extend([static[i] for i in ticker_val_idx])
+                static_test.extend([static[i] for i in ticker_test_idx])
+            
+            # Convert back to numpy
+            X_train = np.array(X_train)
+            X_val = np.array(X_val)
+            X_test = np.array(X_test)
+            y_train = np.array(y_train)
+            y_val = np.array(y_val)
+            y_test = np.array(y_test)
+            ts_train = np.array(ts_train)
+            ts_val = np.array(ts_val)
+            ts_test = np.array(ts_test)
+            static_train = np.array(static_train)
+            static_val = np.array(static_val)
+            static_test = np.array(static_test)
+            
+            print(f"   ✅ Split per ticker (all tickers in all splits)\n")
+        else:
+            # Non-augmented: normal temporal split
+            n_samples = len(X)
+            train_ratio = self.config['data']['train_ratio']
+            val_ratio = self.config['data']['val_ratio']
+            
+            train_end = int(n_samples * train_ratio)
+            val_end = int(n_samples * (train_ratio + val_ratio))
+            
+            X_train = X[:train_end]
+            X_val = X[train_end:val_end]
+            X_test = X[val_end:]
+            
+            y_train = y[:train_end]
+            y_val = y[train_end:val_end]
+            y_test = y[val_end:]
+            
+            ts_train = ts[:train_end]
+            ts_val = ts[train_end:val_end]
+            ts_test = ts[val_end:]
+            
+            static_train = static[:train_end]
+            static_val = static[train_end:val_end]
+            static_test = static[val_end:]
         
-        X_train = X[:train_end]
-        X_val = X[train_end:val_end]
-        X_test = X[val_end:]
-        
-        y_train = y[:train_end]
-        y_val = y[train_end:val_end]
-        y_test = y[val_end:]
-        
-        ts_train = ts[:train_end]
-        ts_val = ts[train_end:val_end]
-        ts_test = ts[val_end:]
-        
-        static_train = static[:train_end]
-        static_val = static[train_end:val_end]
-        static_test = static[val_end:]
+        # Calculate total samples after split
+        n_samples = len(X_train) + len(X_val) + len(X_test)
         
         print(f"  train: {len(X_train):,} samples ({len(X_train)/n_samples*100:.1f}%)")
         print(f"  val  : {len(X_val):,} samples ({len(X_val)/n_samples*100:.1f}%)")
@@ -407,14 +470,16 @@ class TFTDataPipeline:
             X, y, ts, static: Feature sequences, targets, timestamps, and static features
         """
         # Determine target column
-        if 'target_basket_close' in df.columns:
-            target_col = 'target_basket_close'
-        elif 'close_inflation' in df.columns:
+        # Priority: close_inflation (augmented - each ticker predicts itself) > target_basket_close
+        if 'close_inflation' in df.columns:
             target_col = 'close_inflation'
+        elif 'target_basket_close' in df.columns:
+            target_col = 'target_basket_close'
         else:
-            # Find first close column
-            close_cols = [c for c in df.columns if c.startswith('close_')]
-            target_col = close_cols[0] if close_cols else 'close'
+            raise ValueError(
+                f"No valid target column found! "
+                f"Expected 'close_inflation' or 'target_basket_close'"
+            )
         
         print(f"\n{'='*80}")
         print("  Y LABEL COMPUTATION (Multi-Horizon Forward Returns)")
@@ -438,6 +503,11 @@ class TFTDataPipeline:
             print(f"       y[{h}d] = (basket_price[t+{h}] - $100) / $100")
         print(f"\n   This gives % returns for {target_group} basket at each horizon")
         print(f"{'='*80}\n")
+        
+        # For augmented data, sort by ticker+timestamp to make ticker data contiguous
+        if 'inflation_ticker' in df.columns:
+            df = df.sort_values(['inflation_ticker', 'timestamp']).reset_index(drop=True)
+            print(f"   ✅ Sorted by inflation_ticker + timestamp for contiguous sequences\n")
         
         # Get feature columns (exclude timestamp, date, static features)
         feature_cols = [c for c in df.columns if c not in ['timestamp', 'date', 'inflation_ticker', 'inflation_category']]
@@ -466,22 +536,52 @@ class TFTDataPipeline:
         print(f"   Lookback: {self.lookback} periods")
         print(f"   Max horizon: {max_horizon} periods")
         print(f"   Available samples: {len(df)} rows")
-        print(f"   Valid range: [{self.lookback}, {len(df) - max_horizon}]\n")
         
-        for i in range(self.lookback, len(df) - max_horizon):
-            X.append(feature_data[i - self.lookback:i])
+        # For augmented data, create sequences PER TICKER (don't mix tickers!)
+        if 'inflation_ticker' in df.columns:
+            print(f"   ⚙️  Augmented data - creating sequences per ticker\n")
             
-            current_price = target_prices[i]
-            targets = [(target_prices[i + h] - current_price) / current_price for h in self.horizons]
-            y.append(targets)
+            for ticker in df['inflation_ticker'].unique():
+                ticker_mask = df['inflation_ticker'] == ticker
+                ticker_indices = np.where(ticker_mask)[0]
+                
+                # Create sequences within this ticker's data only
+                for idx in ticker_indices:
+                    if idx < self.lookback or idx + max_horizon >= len(df):
+                        continue
+                    
+                    # Verify sequence stays within same ticker
+                    lookback_start = idx - self.lookback
+                    if not all(df['inflation_ticker'].iloc[lookback_start:idx + max_horizon + 1] == ticker):
+                        continue
+                    
+                    X.append(feature_data[lookback_start:idx])
+                    
+                    current_price = target_prices[idx]
+                    targets = [(target_prices[idx + h] - current_price) / current_price for h in self.horizons]
+                    y.append(targets)
+                    
+                    ts.append(timestamps[idx])
+                    static.append([static_ticker[idx], static_category[idx]])
             
-            ts.append(timestamps[i])
+            print(f"   ✅ Created {len(X)} sequences per ticker (no mixing)\n")
+        else:
+            # Non-augmented: create sequences normally
+            print(f"   Valid range: [{self.lookback}, {len(df) - max_horizon}]\n")
             
-            # Add static features for this sequence
-            if has_static:
-                static.append([static_ticker[i], static_category[i]])
-            else:
-                static.append([0, 0])  # Placeholder
+            for i in range(self.lookback, len(df) - max_horizon):
+                X.append(feature_data[i - self.lookback:i])
+                
+                current_price = target_prices[i]
+                targets = [(target_prices[i + h] - current_price) / current_price for h in self.horizons]
+                y.append(targets)
+                
+                ts.append(timestamps[i])
+                
+                if has_static:
+                    static.append([static_ticker[i], static_category[i]])
+                else:
+                    static.append([0, 0])  # Placeholder
         
         # Show sample Y labels
         if len(y) > 0:

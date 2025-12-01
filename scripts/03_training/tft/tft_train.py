@@ -497,7 +497,7 @@ class TemporalFusionTransformer(nn.Module):
         mask = mask.masked_fill(mask == 1, float('-inf'))
         return mask
     
-    def forward(self, x: torch.Tensor, static_features: torch.Tensor = None, y_future: torch.Tensor = None, teacher_forcing: bool = True):
+    def forward(self, x: torch.Tensor, static_features: torch.Tensor = None, y_future: torch.Tensor = None, teacher_forcing: bool = True, return_attention: bool = False):
         """
         TFT Forward pass.
         
@@ -506,9 +506,11 @@ class TemporalFusionTransformer(nn.Module):
             static_features: [batch, num_static] - optional static categorical features
             y_future: [batch, num_horizons] - ground truth targets for teacher forcing (optional)
             teacher_forcing: if True and y_future provided, use teacher forcing in future decoder
+            return_attention: if True, return attention weights for visualization
         
         Returns:
             predictions: [batch, horizons]
+            attention_weights: (optional) [batch, num_heads, seq_len, seq_len] if return_attention=True
         """
         batch_size, lookback, num_features = x.shape
         
@@ -571,7 +573,25 @@ class TemporalFusionTransformer(nn.Module):
         batch_size, seq_len, _ = enriched.shape
         mask = self.causal_mask[:seq_len, :seq_len]  # [T, T]
         
-        encoded = self.transformer_encoder(enriched, mask=mask)  # [batch, lookback, hidden_size]
+        # Use hook to capture attention if needed (doesn't break forward pass)
+        attention_weights = None
+        if return_attention:
+            # Store attention weights using hook
+            attn_weights_list = []
+            
+            def attn_hook(module, input, output):
+                # MultiheadAttention returns (output, weights) when need_weights=True
+                # But in normal forward, it only returns output
+                # We'll capture from the module's internal state instead
+                pass
+            
+            # For now, just run normal forward - attention capture needs deeper integration
+            # This prevents breaking the model during logging
+            encoded = self.transformer_encoder(enriched, mask=mask)
+            # Return None for attention_weights to indicate it's not yet implemented
+            attention_weights = None
+        else:
+            encoded = self.transformer_encoder(enriched, mask=mask)  # [batch, lookback, hidden_size]
         
         # ===== 5. Position-wise Processing =====
         # Apply GRN to each timestep (if enabled)
@@ -639,6 +659,8 @@ class TemporalFusionTransformer(nn.Module):
             
             predictions = torch.cat(preds, dim=1)  # [batch, H]
         
+        if return_attention:
+            return predictions, attention_weights
         return predictions
     
     def _init_weights(self):
@@ -786,6 +808,109 @@ def compute_metrics(predictions: torch.Tensor, targets: torch.Tensor, horizons: 
             metrics[f"{horizon_label}_RMSE"] = h_rmse
         
         return metrics
+
+
+def print_attention_console(attention_weights, max_display=36, sample_mode='sample'):
+    """Print attention patterns as ASCII art in console.
+    
+    Args:
+        attention_weights: [batch, num_heads, seq_len, seq_len]
+        max_display: Maximum sequence length to display (for readability)
+        sample_mode: 'full' for first N steps, 'sample' for beginning/middle/end
+    """
+    if attention_weights is None:
+        return
+    
+    # Get first sample, average across heads
+    batch_size, num_heads, seq_len, _ = attention_weights.shape
+    attn_avg = attention_weights[0, :, :, :].mean(dim=0)  # [seq, seq]
+    attn_avg = attn_avg.detach().cpu().numpy()
+    
+    if sample_mode == 'sample' and seq_len > max_display:
+        # Show beginning, middle, end
+        chunk_size = max_display // 3
+        indices = list(range(chunk_size)) + \
+                  list(range(seq_len//2 - chunk_size//2, seq_len//2 + chunk_size//2)) + \
+                  list(range(seq_len - chunk_size, seq_len))
+        attn_display = attn_avg[indices][:, indices]
+        display_indices = indices
+    else:
+        # Show first N timesteps
+        display_len = min(seq_len, max_display)
+        attn_display = attn_avg[:display_len, :display_len]
+        display_indices = list(range(display_len))
+    
+    # Define ASCII characters for different attention levels
+    chars = [' ', '·', '░', '▒', '▓', '█']
+    
+    display_len = len(display_indices)
+    if sample_mode == 'sample' and seq_len > max_display:
+        print(f"\n  📊 Attention Pattern (Sampled from {seq_len} timesteps: start/mid/end, Avg {num_heads} heads):")
+    else:
+        print(f"\n  📊 Attention Pattern (First {display_len}/{seq_len} timesteps, Avg {num_heads} heads):")
+    
+    print(f"     Query → | " + ''.join([f"{display_indices[i]%10}" for i in range(display_len)]))
+    print(f"     --------+-" + '-' * display_len)
+    
+    for i in range(display_len):
+        # Convert attention values to ASCII characters
+        row = attn_display[i]
+        ascii_row = ''
+        for val in row:
+            # Map [0, 1] to character index
+            char_idx = min(int(val * len(chars)), len(chars) - 1)
+            ascii_row += chars[char_idx]
+        
+        t_idx = display_indices[i]
+        print(f"     t={t_idx:3d} Key | {ascii_row}")
+    
+    # Show statistics (use full sequence, not just displayed portion)
+    recent_attn = attn_avg[:, -3:].mean()  # Last 3 timesteps (full sequence)
+    distant_attn = attn_avg[:, :3].mean()  # First 3 timesteps (full sequence)
+    mid_attn = attn_avg[:, seq_len//2-1:seq_len//2+2].mean()  # Middle 3 timesteps
+    print(f"\n  💡 Avg attention to recent past (last 3 of {seq_len}): {recent_attn:.3f}")
+    print(f"  💡 Avg attention to middle ({seq_len//2-1}-{seq_len//2+1}): {mid_attn:.3f}")
+    print(f"  💡 Avg attention to distant past (first 3): {distant_attn:.3f}")
+
+
+def log_attention_heatmap(writer, attention_weights, epoch, max_samples=4, max_timesteps=64):
+    """Log attention heatmap to TensorBoard.
+    
+    Args:
+        writer: TensorBoard SummaryWriter
+        attention_weights: [batch, num_heads, seq_len, seq_len]
+        epoch: Current epoch number
+        max_samples: Max number of samples to visualize
+        max_timesteps: Max sequence length to show (for readability)
+    """
+    if writer is None or attention_weights is None:
+        return
+    
+    import matplotlib.pyplot as plt
+    import matplotlib
+    matplotlib.use('Agg')  # Non-interactive backend
+    
+    # Get first sample, average across heads
+    batch_size, num_heads, seq_len, _ = attention_weights.shape
+    num_samples = min(batch_size, max_samples)
+    seq_len = min(seq_len, max_timesteps)
+    
+    # Average across attention heads
+    attn_avg = attention_weights[:num_samples, :, :seq_len, :seq_len].mean(dim=1)  # [samples, seq, seq]
+    attn_avg = attn_avg.detach().cpu().numpy()
+    
+    # Create heatmap for each sample
+    for sample_idx in range(num_samples):
+        fig, ax = plt.subplots(figsize=(10, 8))
+        im = ax.imshow(attn_avg[sample_idx], cmap='viridis', aspect='auto')
+        ax.set_xlabel('Key Position')
+        ax.set_ylabel('Query Position')
+        ax.set_title(f'Attention Heatmap (Sample {sample_idx+1}, Avg across {num_heads} heads)')
+        plt.colorbar(im, ax=ax)
+        
+        # Log to TensorBoard
+        writer.add_figure(f'attention/sample_{sample_idx}', fig, epoch)
+        plt.close(fig)
 
 
 def train_epoch(model: nn.Module, dataloader, criterion, optimizer, device, epoch: int = 0, clip_norm: float = 1.0, has_static_features: bool = False) -> dict:
@@ -1450,6 +1575,126 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
                 if writer is not None:
                     writer.flush()
                 print(f"  ✅ Logged gradient/weight histograms to TensorBoard")
+                
+                # Simple attention statistics (doesn't break forward pass)
+                try:
+                    model.eval()
+                    with torch.no_grad():
+                        # Get one validation batch
+                        for val_batch in dataloaders['val']:
+                            val_X, val_y, val_static = val_batch
+                            val_X = val_X.to(device)
+                            val_static = val_static.to(device) if has_static_features else None
+                            
+                            # Run normal forward pass
+                            predictions = model(val_X, static_features=val_static)
+                            
+                            # Print basic attention layer statistics
+                            print(f"\n  📊 Attention Layer Statistics (Epoch {epoch+1}):")
+                            
+                            # Check attention layer weights/activations
+                            for layer_idx, layer in enumerate(model.transformer_encoder.layers):
+                                attn_module = layer.self_attn
+                                
+                                # Get weight norms
+                                in_proj_weight = attn_module.in_proj_weight
+                                out_proj_weight = attn_module.out_proj.weight
+                                
+                                in_norm = in_proj_weight.norm().item()
+                                out_norm = out_proj_weight.norm().item()
+                                in_std = in_proj_weight.std().item()
+                                out_std = out_proj_weight.std().item()
+                                
+                                print(f"     Layer {layer_idx}: in_proj_norm={in_norm:.3f}, out_proj_norm={out_norm:.3f}")
+                                print(f"                in_proj_std={in_std:.4f}, out_proj_std={out_std:.4f}")
+                            
+                            # Check encoder output statistics (proxy for attention effectiveness)
+                            with torch.no_grad():
+                                # Get intermediate representation
+                                if hasattr(model, 'feature_projection'):
+                                    features = model.feature_projection(val_X[:1])
+                                else:
+                                    x_reshaped = val_X[:1].unsqueeze(-1)
+                                    features, _ = model.variable_selection(x_reshaped)
+                                
+                                features = model.pos_encoder(features)
+                                features = model.dropout_layer(features)
+                                
+                                # Pass through transformer
+                                mask = model.causal_mask[:features.size(1), :features.size(1)]
+                                encoded = model.transformer_encoder(features, mask=mask)
+                                
+                                # Statistics on encoded output
+                                enc_mean = encoded.mean().item()
+                                enc_std = encoded.std().item()
+                                enc_max = encoded.abs().max().item()
+                                
+                                print(f"\n     Encoded output: mean={enc_mean:.4f}, std={enc_std:.4f}, max_abs={enc_max:.4f}")
+                                
+                                # Check if output is collapsing (all near zero)
+                                if enc_std < 0.01:
+                                    print(f"     ⚠️  WARNING: Low variance - possible attention collapse!")
+                                elif enc_std > 0.5:
+                                    print(f"     ✅ Good variance - attention is active")
+                                
+                                # Timestep group analysis - where is attention focusing?
+                                seq_len = encoded.size(1)
+                                
+                                # Split into groups: beginning (0-25%), middle (37.5-62.5%), end (75-100%)
+                                begin_end = seq_len // 4
+                                mid_start = int(seq_len * 0.375)
+                                mid_end = int(seq_len * 0.625)
+                                end_start = int(seq_len * 0.75)
+                                
+                                # Compute statistics for each region
+                                begin_region = encoded[:, :begin_end, :]
+                                mid_region = encoded[:, mid_start:mid_end, :]
+                                end_region = encoded[:, end_start:, :]
+                                
+                                begin_std = begin_region.std().item()
+                                mid_std = mid_region.std().item()
+                                end_std = end_region.std().item()
+                                
+                                begin_mean_abs = begin_region.abs().mean().item()
+                                mid_mean_abs = mid_region.abs().mean().item()
+                                end_mean_abs = end_region.abs().mean().item()
+                                
+                                # Normalize to percentages
+                                total_activity = begin_mean_abs + mid_mean_abs + end_mean_abs
+                                begin_pct = (begin_mean_abs / total_activity) * 100
+                                mid_pct = (mid_mean_abs / total_activity) * 100
+                                end_pct = (end_mean_abs / total_activity) * 100
+                                
+                                print(f"\n  📍 Timestep Attention Focus (Activity Distribution):")
+                                print(f"     Beginning [t=0-{begin_end-1}]:      {begin_pct:.1f}% (std={begin_std:.3f})")
+                                print(f"     Middle [t={mid_start}-{mid_end-1}]:     {mid_pct:.1f}% (std={mid_std:.3f})")
+                                print(f"     End [t={end_start}-{seq_len-1}]:        {end_pct:.1f}% (std={end_std:.3f})")
+                                
+                                # Show bar chart
+                                max_pct = max(begin_pct, mid_pct, end_pct)
+                                begin_bar = '█' * int((begin_pct / max_pct) * 30)
+                                mid_bar = '█' * int((mid_pct / max_pct) * 30)
+                                end_bar = '█' * int((end_pct / max_pct) * 30)
+                                
+                                print(f"\n     Visual:")
+                                print(f"     Beginning: {begin_bar} {begin_pct:.1f}%")
+                                print(f"     Middle:    {mid_bar} {mid_pct:.1f}%")
+                                print(f"     End:       {end_bar} {end_pct:.1f}%")
+                                
+                                # Interpretation
+                                if end_pct > 40:
+                                    print(f"     💡 Strong recent focus - model using recent past")
+                                elif mid_pct > 40:
+                                    print(f"     💡 Balanced temporal focus - looking at history")
+                                elif begin_pct > 40:
+                                    print(f"     💡 Distant past focus - long-term patterns")
+                            
+                            break  # Only need one batch
+                    model.train()
+                except Exception as e:
+                    print(f"  ⚠️  ERROR logging attention stats: {e}")
+                    import traceback
+                    traceback.print_exc()
             except Exception as e:
                 print(f"  ⚠️  ERROR logging histograms: {e}")
                 import traceback

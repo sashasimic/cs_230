@@ -41,8 +41,8 @@ data:
     # - RJA      # Agriculture ETF (used ONLY for target basket, not as input feature)
     - WEAT     # Wheat
     - SOYB     # Soybean
-    # - CORN     # Corn (not in decoder)
-    # - CANE     # Sugar (not in decoder)
+    - CORN     # Corn (not in decoder)
+    - CANE     # Sugar (not in decoder)
   
   # Ticker grouping - Organize tickers into macro categories
   ticker_groups:
@@ -83,7 +83,7 @@ data:
       description: "Energy & commodities - direct inflation drivers"
     
     agriculture:
-      tickers: [DBA, WEAT, SOYB, CORN, CANE]  # RJA excluded from inputs (only used for target)
+      tickers: [WEAT, SOYB]  # RJA excluded from inputs (only used for target)
       description: "Food commodities - food inflation targets"
   
   # ============================================================
@@ -303,29 +303,27 @@ model:
     - month_cos
     - is_weekend
 
-  hidden_size: 96   # Architecture components (granular control)
-  use_variable_selection: false  # Disable VSN - test baseline on augmented data first
-  use_lstm: false                # Disable LSTM - simpler baseline
+  hidden_size: 128   # Architecture components (granular control)
+  # Variable selection network (VSN)
+  use_variable_selection: false  # Enable VSN for feature selection
+  
+  use_lstm: true                # Disable LSTM - simpler baseline
   lstm_layers: 1                 # Number of stacked LSTM layers (1 or 2 recommended)
   use_static_enrichment: false   # DISABLE: Blocks gradients before attention
   use_position_wise_grn: false   # Disable GRN - test pure baseline on augmented data
   
   # Attention configuration
   attention_heads: 8
-  attention_layers: 3            # Stack 3 attention layers like decoder transformer's n_layers
-  attention_heads: 8   # Match decoder transformer's n_heads
+  attention_layers: 2            # Single layer - prevent gradient vanishing
   
-  dropout: 0.3      # Match decoder transformer's dropout
+  dropout: 0.45      # Match decoder transformer's dropout
   
   # Static feature embeddings (for ticker and category)
-  static_embedding_dim: 16  # Embedding size for static features (reduced from 32)
+  static_embedding_dim: 32  # Embedding size for static features (reduced from 32)
 
   # Quantile prediction
   quantiles: [0.5]            # Start with median only (reduce to regression task)
 
-  # Variable selection network (VSN)
-  use_variable_selection: false  # Disabled to reduce params (~400K savings)
-  
   # Static features (DISABLED - match decoder which has no static features)
   static_features: []  # Empty - no static features to match decoder
   
