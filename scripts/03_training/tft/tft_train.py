@@ -10,6 +10,7 @@ Shared training function used by both:
 import os
 import sys
 import yaml
+import importlib.util
 
 # Fix for Mac threading issues - must be set before importing torch
 if sys.platform == 'darwin':  # Mac OS
@@ -45,6 +46,38 @@ except ImportError as e:
     print(f"\n⚠️  CRITICAL: Failed to import TensorBoard utilities: {e}")
     print(f"   Looked in: {common_path}")
     raise
+
+
+# FinCast integration - all import logic is in fincast_extension.py
+# That module handles:
+#   - Checking if FinCast submodule exists
+#   - Importing FFM and dependencies
+#   - Providing helpful error messages if missing
+#   - Exporting FINCAST_AVAILABLE flag
+
+FINCAST_AVAILABLE = False
+TemporalFusionTransformerWithFinCast = None
+
+try:
+    # Try relative import first (for package context)
+    from .fincast_extension import (
+        TemporalFusionTransformerWithFinCast,
+        FINCAST_AVAILABLE
+    )
+except ImportError:
+    # Try absolute import (for direct script execution)
+    try:
+        import importlib.util
+        fincast_ext_path = Path(__file__).parent / "fincast_extension.py"
+        spec = importlib.util.spec_from_file_location("fincast_extension", fincast_ext_path)
+        if spec and spec.loader:
+            fincast_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(fincast_module)
+            TemporalFusionTransformerWithFinCast = fincast_module.TemporalFusionTransformerWithFinCast
+            FINCAST_AVAILABLE = fincast_module.FINCAST_AVAILABLE
+    except Exception as e:
+        # If both imports fail, FinCast is not available
+        pass
 
 
 class PositionalEncoding(nn.Module):
@@ -726,22 +759,11 @@ def compute_layer_grad_stats(model: nn.Module) -> dict:
                 else:
                     layer_type = 'LSTM_Other'
             elif 'transformer_encoder.layers' in name:
-                # TransformerEncoder layers (matching decoder)
+                # TransformerEncoder layers - group all components per layer
                 parts = name.split('.')
                 layer_idx = parts[2] if len(parts) > 2 else '?'
-                # Break out attention vs feedforward within each encoder layer
-                if 'self_attn' in name:
-                    layer_type = f'Attention_L{layer_idx}'
-                elif 'linear1' in name or 'linear2' in name:
-                    layer_type = f'Feedforward_L{layer_idx}'
-                elif 'norm1' in name or 'norm2' in name:
-                    # Norms contribute to the attention/ff layers they're part of
-                    if 'norm1' in name:
-                        layer_type = f'Attention_L{layer_idx}'
-                    else:
-                        layer_type = f'Feedforward_L{layer_idx}'
-                else:
-                    layer_type = f'Encoder_L{layer_idx}_Other'
+                # Group everything in this layer together (attention + feedforward + norms)
+                layer_type = f'Transformer_L{layer_idx}'
             elif 'enc_norm' in name:
                 layer_type = 'EncoderNorm'
             elif 'future_decoder' in name or 'future_in_proj' in name or 'future_out_proj' in name or 'start_token' in name:
@@ -1350,14 +1372,72 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     print("   Initializing Temporal Fusion Transformer")
     print("="*80)
     
-    # Pass actual feature count from data (after pivoting)
-    model = TemporalFusionTransformer(config, num_features=num_features).to(device)
+    # Read FinCast config from YAML
+    fincast_config = config.get('fincast', {})
+    use_fincast = fincast_config.get('enabled', False)
+    
+    # Debug: Show what we read from config
+    print(f"\n🔍 FinCast config check:")
+    print(f"   fincast section exists: {('fincast' in config)}")
+    print(f"   fincast.enabled value: {fincast_config.get('enabled', 'KEY_NOT_FOUND')}")
+    print(f"   fincast.enabled type: {type(fincast_config.get('enabled', None))}")
+    print(f"   use_fincast (final decision): {use_fincast}")
+    
+    # Initialize model (with or without FinCast)
+    if use_fincast:
+        if not FINCAST_AVAILABLE or TemporalFusionTransformerWithFinCast is None:
+            raise ImportError(
+                "FinCast is enabled in config but not available.\n"
+                "Please ensure the FinCast submodule is properly installed.\n"
+                "See scripts/03_training/README.md for setup instructions."
+            )
+        
+        # Validate checkpoint exists before proceeding
+        checkpoint_path = fincast_config.get('checkpoint_path', 'external/fincast/checkpoints/v1.pth')
+        if not Path(checkpoint_path).exists():
+            raise FileNotFoundError(
+                f"\n❌ FinCast checkpoint not found: {checkpoint_path}\n\n"
+                f"Please download the checkpoint using:\n"
+                f"  python -c \"from huggingface_hub import snapshot_download; "
+                f"snapshot_download(repo_id='Vincent05R/FinCast', local_dir='external/fincast/checkpoints')\"\n\n"
+                f"Or set fincast.enabled: false in your config to use baseline TFT."
+            )
+        
+        print(f"\n🔧 Initializing TFT with FinCast integration...")
+        print(f"   Checkpoint: {checkpoint_path}")
+        print(f"   Price tickers: {fincast_config.get('price_tickers', [])}")
+        
+        # Build model config from YAML settings
+        model_fincast_config = {
+            'output_dim': fincast_config.get('output_dim', 128),
+            'dropout': fincast_config.get('dropout', 0.1),
+            'freeze_backbone': fincast_config.get('freeze_backbone', True),
+            'max_context_len': fincast_config.get('max_context_len', 512),
+            'checkpoint_path': checkpoint_path,
+            'price_tickers': fincast_config.get('price_tickers', [])
+        }
+        
+        model = TemporalFusionTransformerWithFinCast(
+            config=config,
+            num_features=num_features,
+            static_features=static_features,
+            fincast_config=model_fincast_config,
+            tft_class=TemporalFusionTransformer
+        ).to(device)
+    else:
+        print(f"\n🔧 Initializing standard TFT (no FinCast)...")
+        model = TemporalFusionTransformer(config, num_features=num_features, static_features=static_features).to(device)
     
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"  Total parameters: {total_params:,}")
-    print(f"  Trainable parameters: {trainable_params:,}")
+    frozen_params = total_params - trainable_params
+    
+    print(f"\n🔧 Model Parameters:")
+    print(f"   Total: {total_params:,}")
+    print(f"   Trainable: {trainable_params:,}")
+    if frozen_params > 0:
+        print(f"   Frozen: {frozen_params:,} (FinCast backbone)")
     
     # Log experiment metadata to TensorBoard
     additional_model_info = {
@@ -1577,7 +1657,7 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
                     writer.flush()
                 print(f"  ✅ Logged gradient/weight histograms to TensorBoard")
                 
-                # Simple attention statistics (doesn't break forward pass)
+                # Check encoder output statistics (doesn't break forward pass)
                 try:
                     model.eval()
                     with torch.no_grad():
@@ -1587,108 +1667,109 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
                             val_X = val_X.to(device)
                             val_static = val_static.to(device) if has_static_features else None
                             
-                            # Run normal forward pass
-                            predictions = model(val_X, static_features=val_static)
+                            # Get transformer encoder (handle FinCast wrapper)
+                            if hasattr(model, 'tft'):
+                                # FinCast wrapper case
+                                transformer_encoder = model.tft.transformer_encoder
+                                pos_encoder = model.tft.pos_encoder
+                                dropout_layer = model.tft.dropout_layer
+                                causal_mask = model.tft.causal_mask
+                                base_model = model.tft
+                            else:
+                                # Regular TFT case
+                                transformer_encoder = model.transformer_encoder
+                                pos_encoder = model.pos_encoder
+                                dropout_layer = model.dropout_layer
+                                causal_mask = model.causal_mask
+                                base_model = model
                             
-                            # Print basic attention layer statistics
-                            print(f"\n  📊 Attention Layer Statistics (Epoch {epoch+1}):")
+                            print(f"\n  📊 Encoder Output Statistics (Epoch {epoch+1}):")
                             
-                            # Check attention layer weights/activations
-                            for layer_idx, layer in enumerate(model.transformer_encoder.layers):
-                                attn_module = layer.self_attn
-                                
-                                # Get weight norms
-                                in_proj_weight = attn_module.in_proj_weight
-                                out_proj_weight = attn_module.out_proj.weight
-                                
-                                in_norm = in_proj_weight.norm().item()
-                                out_norm = out_proj_weight.norm().item()
-                                in_std = in_proj_weight.std().item()
-                                out_std = out_proj_weight.std().item()
-                                
-                                print(f"     Layer {layer_idx}: in_proj_norm={in_norm:.3f}, out_proj_norm={out_norm:.3f}")
-                                print(f"                in_proj_std={in_std:.4f}, out_proj_std={out_std:.4f}")
+                            # Get intermediate representation
+                            # For FinCast models, process through FinCast first
+                            if hasattr(model, 'tft') and hasattr(model, 'process_with_fincast'):
+                                # FinCast wrapper - process raw features first
+                                val_X_processed = model.process_with_fincast(val_X[:1])
+                                features = base_model.feature_projection(val_X_processed)
+                            elif hasattr(base_model, 'feature_projection'):
+                                # Regular TFT with feature_projection
+                                features = base_model.feature_projection(val_X[:1])
+                            else:
+                                # TFT with variable selection
+                                x_reshaped = val_X[:1].unsqueeze(-1)
+                                features, _ = base_model.variable_selection(x_reshaped)
                             
-                            # Check encoder output statistics (proxy for attention effectiveness)
-                            with torch.no_grad():
-                                # Get intermediate representation
-                                if hasattr(model, 'feature_projection'):
-                                    features = model.feature_projection(val_X[:1])
-                                else:
-                                    x_reshaped = val_X[:1].unsqueeze(-1)
-                                    features, _ = model.variable_selection(x_reshaped)
-                                
-                                features = model.pos_encoder(features)
-                                features = model.dropout_layer(features)
-                                
-                                # Pass through transformer
-                                mask = model.causal_mask[:features.size(1), :features.size(1)]
-                                encoded = model.transformer_encoder(features, mask=mask)
-                                
-                                # Statistics on encoded output
-                                enc_mean = encoded.mean().item()
-                                enc_std = encoded.std().item()
-                                enc_max = encoded.abs().max().item()
-                                
-                                print(f"\n     Encoded output: mean={enc_mean:.4f}, std={enc_std:.4f}, max_abs={enc_max:.4f}")
-                                
-                                # Check if output is collapsing (all near zero)
-                                if enc_std < 0.01:
-                                    print(f"     ⚠️  WARNING: Low variance - possible attention collapse!")
-                                elif enc_std > 0.5:
-                                    print(f"     ✅ Good variance - attention is active")
-                                
-                                # Timestep group analysis - where is attention focusing?
-                                seq_len = encoded.size(1)
-                                
-                                # Split into groups: beginning (0-25%), middle (37.5-62.5%), end (75-100%)
-                                begin_end = seq_len // 4
-                                mid_start = int(seq_len * 0.375)
-                                mid_end = int(seq_len * 0.625)
-                                end_start = int(seq_len * 0.75)
-                                
-                                # Compute statistics for each region
-                                begin_region = encoded[:, :begin_end, :]
-                                mid_region = encoded[:, mid_start:mid_end, :]
-                                end_region = encoded[:, end_start:, :]
-                                
-                                begin_std = begin_region.std().item()
-                                mid_std = mid_region.std().item()
-                                end_std = end_region.std().item()
-                                
-                                begin_mean_abs = begin_region.abs().mean().item()
-                                mid_mean_abs = mid_region.abs().mean().item()
-                                end_mean_abs = end_region.abs().mean().item()
-                                
-                                # Normalize to percentages
-                                total_activity = begin_mean_abs + mid_mean_abs + end_mean_abs
-                                begin_pct = (begin_mean_abs / total_activity) * 100
-                                mid_pct = (mid_mean_abs / total_activity) * 100
-                                end_pct = (end_mean_abs / total_activity) * 100
-                                
-                                print(f"\n  📍 Timestep Attention Focus (Activity Distribution):")
-                                print(f"     Beginning [t=0-{begin_end-1}]:      {begin_pct:.1f}% (std={begin_std:.3f})")
-                                print(f"     Middle [t={mid_start}-{mid_end-1}]:     {mid_pct:.1f}% (std={mid_std:.3f})")
-                                print(f"     End [t={end_start}-{seq_len-1}]:        {end_pct:.1f}% (std={end_std:.3f})")
-                                
-                                # Show bar chart
-                                max_pct = max(begin_pct, mid_pct, end_pct)
-                                begin_bar = '█' * int((begin_pct / max_pct) * 30)
-                                mid_bar = '█' * int((mid_pct / max_pct) * 30)
-                                end_bar = '█' * int((end_pct / max_pct) * 30)
-                                
-                                print(f"\n     Visual:")
-                                print(f"     Beginning: {begin_bar} {begin_pct:.1f}%")
-                                print(f"     Middle:    {mid_bar} {mid_pct:.1f}%")
-                                print(f"     End:       {end_bar} {end_pct:.1f}%")
-                                
-                                # Interpretation
-                                if end_pct > 40:
-                                    print(f"     💡 Strong recent focus - model using recent past")
-                                elif mid_pct > 40:
-                                    print(f"     💡 Balanced temporal focus - looking at history")
-                                elif begin_pct > 40:
-                                    print(f"     💡 Distant past focus - long-term patterns")
+                            features = pos_encoder(features)
+                            features = dropout_layer(features)
+                            
+                            # Pass through transformer
+                            mask = causal_mask[:features.size(1), :features.size(1)]
+                            encoded = transformer_encoder(features, mask=mask)
+                            
+                            # Statistics on encoded output
+                            enc_mean = encoded.mean().item()
+                            enc_std = encoded.std().item()
+                            enc_max = encoded.abs().max().item()
+                            
+                            print(f"\n     Encoded output: mean={enc_mean:.4f}, std={enc_std:.4f}, max_abs={enc_max:.4f}")
+                            
+                            # Check if output is collapsing (all near zero)
+                            if enc_std < 0.01:
+                                print(f"     ⚠️  WARNING: Low variance - possible attention collapse!")
+                            elif enc_std > 0.5:
+                                print(f"     ✅ Good variance - attention is active")
+                            
+                            # Timestep group analysis - where is attention focusing?
+                            seq_len = encoded.size(1)
+                            
+                            # Split into groups: beginning (0-25%), middle (37.5-62.5%), end (75-100%)
+                            begin_end = seq_len // 4
+                            mid_start = int(seq_len * 0.375)
+                            mid_end = int(seq_len * 0.625)
+                            end_start = int(seq_len * 0.75)
+                            
+                            # Compute statistics for each region
+                            begin_region = encoded[:, :begin_end, :]
+                            mid_region = encoded[:, mid_start:mid_end, :]
+                            end_region = encoded[:, end_start:, :]
+                            
+                            begin_std = begin_region.std().item()
+                            mid_std = mid_region.std().item()
+                            end_std = end_region.std().item()
+                            
+                            begin_mean_abs = begin_region.abs().mean().item()
+                            mid_mean_abs = mid_region.abs().mean().item()
+                            end_mean_abs = end_region.abs().mean().item()
+                            
+                            # Normalize to percentages
+                            total_activity = begin_mean_abs + mid_mean_abs + end_mean_abs
+                            begin_pct = (begin_mean_abs / total_activity) * 100
+                            mid_pct = (mid_mean_abs / total_activity) * 100
+                            end_pct = (end_mean_abs / total_activity) * 100
+                            
+                            print(f"\n  📍 Timestep Attention Focus (Activity Distribution):")
+                            print(f"     Beginning [t=0-{begin_end-1}]:      {begin_pct:.1f}% (std={begin_std:.3f})")
+                            print(f"     Middle [t={mid_start}-{mid_end-1}]:     {mid_pct:.1f}% (std={mid_std:.3f})")
+                            print(f"     End [t={end_start}-{seq_len-1}]:        {end_pct:.1f}% (std={end_std:.3f})")
+                            
+                            # Show bar chart
+                            max_pct = max(begin_pct, mid_pct, end_pct)
+                            begin_bar = '█' * int((begin_pct / max_pct) * 30)
+                            mid_bar = '█' * int((mid_pct / max_pct) * 30)
+                            end_bar = '█' * int((end_pct / max_pct) * 30)
+                            
+                            print(f"\n     Visual:")
+                            print(f"     Beginning: {begin_bar} {begin_pct:.1f}%")
+                            print(f"     Middle:    {mid_bar} {mid_pct:.1f}%")
+                            print(f"     End:       {end_bar} {end_pct:.1f}%")
+                            
+                            # Interpretation
+                            if end_pct > 40:
+                                print(f"     💡 Strong recent focus - model using recent past")
+                            elif mid_pct > 40:
+                                print(f"     💡 Balanced temporal focus - looking at history")
+                            elif begin_pct > 40:
+                                print(f"     💡 Distant past focus - long-term patterns")
                             
                             break  # Only need one batch
                     model.train()

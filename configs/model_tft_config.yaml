@@ -83,8 +83,8 @@ data:
       description: "Energy & commodities - direct inflation drivers"
     
     agriculture:
-      tickers: [WEAT, SOYB]  # RJA excluded from inputs (only used for target)
-      description: "Food commodities - food inflation targets"
+      tickers: [DBA, WEAT, SOYB, CORN, CANE]  # Comprehensive food inflation basket
+      description: "Food commodities - comprehensive coverage (broad basket + grains + sugar)"
   
   # ============================================================
   # TARGET CONFIGURATION
@@ -92,8 +92,13 @@ data:
   # Defines which ticker group and how to aggregate for Y labels
   target:
     group: agriculture              # Which ticker_group to predict
-    basket_tickers: [RJA, WEAT, SOYB]  # RJA available until 2022-10-21, then WEAT+SOYB (matches decoder v1)
-    aggregation: mean               # How to combine: mean, median, weighted (skipna=True handles missing RJA)
+    basket_tickers: [DBA, WEAT, SOYB, CORN, CANE]  # Comprehensive food inflation basket
+    # DBA: 30% - Broad diversified agriculture (rice, cocoa, coffee, etc.)
+    # WEAT: 20% - Wheat (bread, pasta)
+    # CORN: 20% - Corn (feed, ethanol, food staples)
+    # SOYB: 20% - Soybean (feed, oil, protein)
+    # CANE: 10% - Sugar (sweeteners)
+    aggregation: mean               # Equal weight across all 5 tickers (skipna=True handles missing data)
     feature: close                  # Which feature: close, sma_50, etc.
   
   # ============================================================
@@ -303,18 +308,18 @@ model:
     - month_cos
     - is_weekend
 
-  hidden_size: 128   # Architecture components (granular control)
+  hidden_size: 64   # Architecture components (granular control)
   # Variable selection network (VSN)
   use_variable_selection: false  # Enable VSN for feature selection
   
-  use_lstm: true                # Enable LSTM for sequential processing
+  use_lstm: false                # Enable LSTM for sequential processing
   lstm_layers: 1                 # Number of stacked LSTM layers (1 or 2 recommended)
   use_static_enrichment: false   # DISABLE: Blocks gradients before attention
   use_position_wise_grn: false   # Disable GRN - test pure baseline on augmented data
   
   # Attention configuration
   attention_heads: 8
-  attention_layers: 2            # Single layer - prevent gradient vanishing
+  attention_layers: 1            # Single layer - prevent gradient vanishing
   
   dropout: 0.45      # Match decoder transformer's dropout
   
@@ -435,11 +440,47 @@ bigquery:
     table: 'gdelt_sentiment'
     frequency: '1d'
 
+# FinCast Foundation Model Configuration
+fincast:
+  enabled: true                                           # Enable FinCast backbone for price features
+  checkpoint_path: 'external/fincast/checkpoints/v1.pth'  # Path to pre-trained weights (3.97 GB)
+  
+  # Which tickers to process through FinCast (Tier 1: Core Inflation Drivers)
+  # These tickers benefit most from FinCast's pre-trained financial representations
+  price_tickers:
+    # Energy & Commodities (direct inflation drivers)
+    - USO      # Crude Oil - energy inflation
+    - GLD      # Gold - inflation hedge & expectations
+    - DBC      # Commodities Index - basket exposure
+    
+    # Agriculture (comprehensive food inflation basket - all 5 tickers)
+    - DBA      # Broad agriculture ETF - diversified exposure
+    - WEAT     # Wheat - grain staple (bread, pasta)
+    - SOYB     # Soybean - protein, oil, animal feed
+    - CORN     # Corn - grain staple, ethanol, feed
+    - CANE     # Sugar - sweeteners, food processing
+    
+    # Inflation-sensitive sectors
+    - XLE      # Energy sector
+    - XLB      # Materials sector
+    
+    # Dollar (imported inflation)
+    - UUP      # US Dollar Index
+  
+  # FFM Architecture (fixed by pre-trained model - do not change)
+  max_context_len: 512    # Max lookback FinCast can handle (we use 192)
+  dropout: 0.1            # FFM dropout rate
+  
+  # Projection layer (trainable)
+  output_dim: 128         # Project FinCast embeddings from 1280 -> 128
+  freeze_backbone: true   # Freeze 991M FinCast parameters (only train projection + TFT)
+  unfreeze_top_layers: 0  # Number of top FFM layers to fine-tune (0 = all frozen)
+
 # Logging and Monitoring
 logging:
   log_level: 'INFO'
   log_dir: 'logs/tft'
-  tensorboard: true  # Enable for Vertex AI integration
+  tensorboard: false  # Enable for Vertex AI integration
   mlflow: false
   
   # Experiment tracking

@@ -237,13 +237,41 @@ class MultiTickerDataLoader:
         # Pivot to get one column per ticker
         df_pivot = df.pivot(index='timestamp', columns='ticker', values='close')
         
-        # Compute aggregation across available tickers (skip NaN)
+        # Compute equal-weighted basket index from mean of PERCENTAGE RETURNS
+        # This ensures each ticker contributes equally regardless of price level
+        print(f"\n📊 Computing equal-weighted {target_group} basket index...")
+        print(f"   Method: Mean of PERCENTAGE RETURNS (not absolute prices)")
+        print(f"   Each ticker contributes: {100/len(target_tickers):.1f}% (equal weight)")
+        
+        # 1. Compute percentage returns for each ticker
+        returns = df_pivot[target_tickers].pct_change()
+        
+        # 2. Take mean of percentage returns (equal weight)
+        basket_returns = returns.mean(axis=1, skipna=True)
+        
+        # 3. Reconstruct index level using cumulative product
+        # Start at 100 (like a typical index)
+        # Handle first NaN from pct_change
+        basket_returns.iloc[0] = 0.0  # No return on first day
+        df_pivot['target_basket_close'] = 100 * (1 + basket_returns).cumprod()
+        
+        print(f"   Basket index range: {df_pivot['target_basket_close'].min():.2f} to {df_pivot['target_basket_close'].max():.2f}")
+        print(f"   Mean basket return: {basket_returns.mean()*100:.4f}% per period")
+        print(f"   ✅ Equal-weighted basket computed from percentage returns")
+        
+        # Legacy aggregation methods (kept for backward compatibility, but not recommended)
         if aggregation == 'mean':
-            df_pivot['target_basket_close'] = df_pivot[target_tickers].mean(axis=1, skipna=True)
+            # Already computed above using returns-based equal weighting
+            pass
         elif aggregation == 'median':
-            df_pivot['target_basket_close'] = df_pivot[target_tickers].median(axis=1, skipna=True)
-        else:
-            # Default to mean
+            # Median of returns (alternative equal weighting)
+            print(f"   ⚠️  Using median aggregation instead of mean")
+            basket_returns_median = returns.median(axis=1, skipna=True)
+            basket_returns_median.iloc[0] = 0.0
+            df_pivot['target_basket_close'] = 100 * (1 + basket_returns_median).cumprod()
+        elif aggregation == 'price_mean':
+            # DEPRECATED: Mean of prices (price-weighted, not equal-weighted)
+            print(f"   ⚠️  WARNING: Using deprecated price_mean aggregation (price-weighted, not equal-weighted)")
             df_pivot['target_basket_close'] = df_pivot[target_tickers].mean(axis=1, skipna=True)
         
         # Count how many tickers contributed to each aggregation
