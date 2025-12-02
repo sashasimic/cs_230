@@ -31,6 +31,7 @@ def parse_args():
     # Model hyperparameters (tunable) - None means use config file value
     parser.add_argument('--hidden_size', type=int, default=None)
     parser.add_argument('--lstm_layers', type=int, default=None)
+    parser.add_argument('--attention_layers', type=int, default=None)
     parser.add_argument('--attention_heads', type=int, default=None)
     parser.add_argument('--dropout', type=float, default=None)
     parser.add_argument('--learning_rate', type=float, default=None)
@@ -71,6 +72,8 @@ def update_config_with_hyperparameters(config_path: str, args) -> str:
         config['model']['hidden_size'] = args.hidden_size
     if args.lstm_layers is not None and 'lstm_layers' in config.get('model', {}):
         config['model']['lstm_layers'] = args.lstm_layers
+    if args.attention_layers is not None and 'attention_layers' in config.get('model', {}):
+        config['model']['attention_layers'] = args.attention_layers
     if args.attention_heads is not None and 'attention_heads' in config.get('model', {}):
         config['model']['attention_heads'] = args.attention_heads
     if args.dropout is not None and 'dropout' in config.get('model', {}):
@@ -107,6 +110,8 @@ def update_config_with_hyperparameters(config_path: str, args) -> str:
         print(f"Hidden size: {model_config['hidden_size']}")
     if 'lstm_layers' in model_config:
         print(f"LSTM layers: {model_config['lstm_layers']}")
+    if 'attention_layers' in model_config:
+        print(f"Attention layers: {model_config['attention_layers']}")
     if 'd_model' in model_config:
         print(f"d_model: {model_config['d_model']}")
     if 'n_layers' in model_config:
@@ -486,7 +491,15 @@ def main():
         train = train_module.train
         
         # Run training (pass dataset_version so it loads static features if present)
-        train(temp_config_path, dataset_version=args.dataset_version)
+        try:
+            train(temp_config_path, dataset_version=args.dataset_version)
+        except Exception as train_error:
+            print(f"\n❌ Training failed with error:")
+            print(f"   {type(train_error).__name__}: {str(train_error)}")
+            import traceback
+            traceback.print_exc()
+            print(f"\n💡 This trial failed - Vertex AI will continue with other trials")
+            sys.exit(1)
         
         # Load best checkpoint to get metrics
         # Look for model in model_type subdirectory
@@ -499,6 +512,20 @@ def main():
                 if os.path.exists(candidate):
                     local_model_path = candidate
                     break
+        
+        # For TFT: look in run-specific subdirectory (models/tft/{run_name}/tft_best.pt)
+        if local_model_path is None and args.model_type in ['tft', 'tft-augmented']:
+            model_dir = Path('models') / args.model_type.replace('-augmented', '')
+            if model_dir.exists():
+                # Find the most recent run directory
+                run_dirs = [d for d in model_dir.iterdir() if d.is_dir()]
+                if run_dirs:
+                    # Sort by modification time, most recent first
+                    latest_run = max(run_dirs, key=lambda d: d.stat().st_mtime)
+                    candidate = latest_run / f'{args.model_type.replace("-augmented", "")}_best.pt'
+                    if candidate.exists():
+                        local_model_path = str(candidate)
+                        print(f"\n📁 Found checkpoint in run directory: {latest_run.name}")
         
         # Fallback to standard naming for other models or if variants not found
         if local_model_path is None:

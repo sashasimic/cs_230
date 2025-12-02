@@ -91,7 +91,11 @@ def submit_hyperparameter_tuning_job(
             scale='linear'
         ),
         'lstm_layers': hpt.DiscreteParameterSpec(
-            values=[2, 3, 4],  # TFT typically uses 2-4 LSTM layers
+            values=[1, 2],  # LSTM layers (1=baseline, 2=deeper)
+            scale='linear'
+        ),
+        'attention_layers': hpt.DiscreteParameterSpec(
+            values=[1, 2, 3],  # Transformer encoder layers (1=shallow, 2=baseline, 3=deep)
             scale='linear'
         ),
         'attention_heads': hpt.DiscreteParameterSpec(
@@ -103,7 +107,7 @@ def submit_hyperparameter_tuning_job(
             scale='linear'
         ),
         'dropout': hpt.DiscreteParameterSpec(
-            values=[0.2, 0.3, 0.4],  # TFT needs higher dropout for regularization
+            values=[0.3, 0.4, 0.5],  # Higher dropout for regularization
             scale='linear'
         ),
         'batch_size': hpt.DiscreteParameterSpec(

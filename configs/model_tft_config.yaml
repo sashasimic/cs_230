@@ -100,8 +100,8 @@ data:
   # DATA AUGMENTATION CONFIGURATION
   # ============================================================
   # Which ticker groups to use for creating training variants
-  # ENABLED for v8: Create multiple samples per date using agriculture tickers
-  ticker_augment_groups: [agriculture]  # Will create ~3x more training samples
+  # DISABLED: No augmentation - Y is always agriculture basket
+  # ticker_augment_groups: [agriculture]  # DISABLED - no ticker variants
   
   # Shared frequency for all tickers
   frequency: 'daily'
@@ -212,7 +212,7 @@ data:
   # Strategy: Create N samples per date by varying augmentation group tickers
   # Groups to augment are specified in data.ticker_augment_groups
   augmentation:
-    enabled: true   # ENABLED for v8 dataset
+    enabled: false   # DISABLED - Y is always agriculture basket, no augmentation
     seed: 42
 
 # Model Architecture
@@ -307,7 +307,7 @@ model:
   # Variable selection network (VSN)
   use_variable_selection: false  # Enable VSN for feature selection
   
-  use_lstm: true                # Disable LSTM - simpler baseline
+  use_lstm: true                # Enable LSTM for sequential processing
   lstm_layers: 1                 # Number of stacked LSTM layers (1 or 2 recommended)
   use_static_enrichment: false   # DISABLE: Blocks gradients before attention
   use_position_wise_grn: false   # Disable GRN - test pure baseline on augmented data
@@ -439,14 +439,14 @@ bigquery:
 logging:
   log_level: 'INFO'
   log_dir: 'logs/tft'
-  tensorboard: false  # Enable for Vertex AI integration
+  tensorboard: true  # Enable for Vertex AI integration
   mlflow: false
   
   # Experiment tracking
   experiment_name: 'inflation_tft_baseline'
-  run_name: 'tft_baseline_v1'  # Exact match to decoder v1: same dates, tickers, horizons
+  run_name: null  # Auto-generated timestamp for parallel HP tuning runs
                   # null = auto-generated timestamp (enables parallel runs)
-                  # Creates unique folder: models/tft/<run_name>/
+                  # Creates unique folder: models/tft/run_YYYYMMDD_HHMMSS/
 
 # Reproducibility
 seed: 42
