@@ -83,8 +83,8 @@ data:
       description: "Energy & commodities - direct inflation drivers"
     
     agriculture:
-      tickers: [WEAT, SOYB]  # RJA excluded from inputs (only used for target)
-      description: "Food commodities - food inflation targets"
+      tickers: [DBA, WEAT, SOYB, CORN, CANE]  # Comprehensive agriculture basket
+      description: "Food commodities - comprehensive CPI food inflation basket"
   
   # ============================================================
   # TARGET CONFIGURATION
@@ -92,8 +92,8 @@ data:
   # Defines which ticker group and how to aggregate for Y labels
   target:
     group: agriculture              # Which ticker_group to predict
-    basket_tickers: [RJA, WEAT, SOYB]  # RJA available until 2022-10-21, then WEAT+SOYB (matches decoder v1)
-    aggregation: mean               # How to combine: mean, median, weighted (skipna=True handles missing RJA)
+    basket_tickers: [DBA, WEAT, SOYB, CORN, CANE]  # Comprehensive agriculture basket (5 tickers)
+    aggregation: mean               # Equal-weighted via mean of percentage returns
     feature: close                  # Which feature: close, sma_50, etc.
   
   # ============================================================
@@ -191,7 +191,7 @@ data:
   
   # Time series parameters
   lookback_window: 192        # 192 days lookback
-  prediction_horizons: [4, 8, 16]  # EXACT MATCH to decoder transformer (was [7,14,30])
+  prediction_horizons: [7, 14, 28]  # EXACT MATCH to decoder transformer (was [7,14,30])
   
   # Normalization
   normalize: true

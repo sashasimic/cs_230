@@ -201,7 +201,7 @@ def submit_hyperparameter_tuning_job(
     if dataset_version:
         labels['dataset_version'] = dataset_version.lower().replace('/', '-').replace('_', '-')
     
-    # Try to extract date range from dataset metadata (source of truth)
+    # Try to extract date range and hyperparams from dataset metadata
     try:
         # Parse dataset version to find metadata file
         # dataset_version can be "v1" or "model_type/v1"
@@ -217,6 +217,7 @@ def submit_hyperparameter_tuning_job(
                 with open(dataset_path, 'r') as f:
                     dataset_metadata = yaml.safe_load(f)
                 
+                # Date range
                 start_date = dataset_metadata.get('start_date', '')
                 end_date = dataset_metadata.get('end_date', '')
                 
@@ -225,11 +226,32 @@ def submit_hyperparameter_tuning_job(
                     labels['start_date'] = start_date.replace('/', '-')
                 if end_date:
                     labels['end_date'] = end_date.replace('/', '-')
+                
+                # Data configuration (useful for filtering)
+                if 'lookback_window' in dataset_metadata:
+                    labels['lookback'] = str(dataset_metadata['lookback_window'])
+                if 'prediction_horizons' in dataset_metadata:
+                    horizons = dataset_metadata['prediction_horizons']
+                    labels['num_horizons'] = str(len(horizons))
             else:
                 print(f"   ⚠️  Dataset metadata not found: {dataset_path}")
     except Exception as e:
         # Non-critical, continue without date labels
-        print(f"   ⚠️  Could not extract date range from dataset: {e}")
+        print(f"   ⚠️  Could not extract metadata: {e}")
+    
+    # Add phase-specific labels
+    if phase == 2:
+        # Phase 2: Add locked architecture params for easy filtering
+        labels['hidden_size'] = '128'
+        labels['lstm_layers'] = '2'
+        labels['attention_layers'] = '2'
+        labels['attention_heads'] = '8'
+        labels['batch_size'] = '64'
+        labels['lr'] = '5e-05'  # 'learning_rate' is too long
+        labels['tuning'] = 'dropout-weight_decay'
+    else:
+        # Phase 1: Indicate architecture search
+        labels['tuning'] = 'architecture'
     
     print(f"\n🏷️  Adding labels for identification:")
     for key, value in labels.items():
@@ -277,6 +299,7 @@ def submit_hyperparameter_tuning_job(
         parameter_spec=hyperparameter_specs,
         max_trial_count=max_trial_count,
         parallel_trial_count=parallel_trial_count,
+        labels=labels,  # Add labels to HP tuning job for visibility in console
     )
     
     print(f"\n🚀 Submitting hyperparameter tuning job...")

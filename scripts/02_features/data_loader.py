@@ -237,14 +237,34 @@ class MultiTickerDataLoader:
         # Pivot to get one column per ticker
         df_pivot = df.pivot(index='timestamp', columns='ticker', values='close')
         
-        # Compute aggregation across available tickers (skip NaN)
+        # Compute equal-weighted index from mean of RETURNS (proper equal weighting)
+        # This ensures each ticker contributes equally regardless of price level
+        # Method: Compute percentage returns, average them, then reconstruct index level
+        
         if aggregation == 'mean':
-            df_pivot['target_basket_close'] = df_pivot[target_tickers].mean(axis=1, skipna=True)
+            # Step 1: Compute percentage returns for each ticker
+            returns = df_pivot[target_tickers].pct_change()
+            
+            # Step 2: Average returns across tickers (equal weighting)
+            avg_returns = returns.mean(axis=1, skipna=True)
+            
+            # Step 3: Reconstruct cumulative index level (start at 100)
+            df_pivot['target_basket_close'] = 100 * (1 + avg_returns).cumprod()
+            
+            print(f"   📊 Using equal-weighted aggregation (mean of PERCENTAGE RETURNS)")
+            print(f"      Each ticker contributes equally regardless of price level")
+        
         elif aggregation == 'median':
+            # For median, still use price-based aggregation (less common)
             df_pivot['target_basket_close'] = df_pivot[target_tickers].median(axis=1, skipna=True)
+            print(f"   📊 Using median aggregation (absolute prices)")
+        
         else:
-            # Default to mean
-            df_pivot['target_basket_close'] = df_pivot[target_tickers].mean(axis=1, skipna=True)
+            # Default to mean of returns
+            returns = df_pivot[target_tickers].pct_change()
+            avg_returns = returns.mean(axis=1, skipna=True)
+            df_pivot['target_basket_close'] = 100 * (1 + avg_returns).cumprod()
+            print(f"   📊 Using equal-weighted aggregation (mean of PERCENTAGE RETURNS) [default]")
         
         # Count how many tickers contributed to each aggregation
         df_pivot['num_tickers_available'] = df_pivot[target_tickers].notna().sum(axis=1)
