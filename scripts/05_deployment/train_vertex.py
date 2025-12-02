@@ -36,6 +36,7 @@ def parse_args():
     parser.add_argument('--dropout', type=float, default=None)
     parser.add_argument('--learning_rate', type=float, default=None)
     parser.add_argument('--batch_size', type=int, default=None)
+    parser.add_argument('--weight_decay', type=float, default=None)
     
     # Training settings
     parser.add_argument('--epochs', type=int, default=None)
@@ -86,6 +87,8 @@ def update_config_with_hyperparameters(config_path: str, args) -> str:
         config['training']['batch_size'] = args.batch_size
     if args.learning_rate is not None:
         config['training']['learning_rate'] = args.learning_rate
+    if args.weight_decay is not None:
+        config['training']['weight_decay'] = args.weight_decay
     if args.early_stopping_patience is not None and 'early_stopping' in config.get('training', {}):
         config['training']['early_stopping']['patience'] = args.early_stopping_patience
     

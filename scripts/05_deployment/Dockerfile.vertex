@@ -30,8 +30,21 @@ COPY utils/ utils/
 #   2. Add back: COPY external/fincast external/fincast
 #   3. Add back: RUN pip install -e external/fincast
 
+# Copy FinCast submodule (for FinCast-enabled models)
+COPY external/fincast external/fincast
+
+# Install FinCast dependencies and package (if FinCast exists)
+RUN if [ -d external/fincast ]; then \
+        # Install requirements first
+        if [ -f external/fincast/requirement_v2.txt ]; then \
+            pip install --no-cache-dir -r external/fincast/requirement_v2.txt; \
+        fi && \
+        # Install FinCast as editable package
+        pip install --no-cache-dir -e external/fincast; \
+    fi
+
 # Create necessary directories
-RUN mkdir -p checkpoints models logs
+RUN mkdir -p checkpoints models logs external/fincast/checkpoints
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1

@@ -50,9 +50,9 @@ IMAGE_URI = VERTEX_CONFIG['project'].get('image_uri', f"gcr.io/{PROJECT_ID}/mode
 
 def submit_training_job(
     job_name=None,
-    machine_type='n1-standard-4',  # N1 supports GPUs
-    accelerator_type='NVIDIA_TESLA_T4',  # T4 GPU enabled by default
-    accelerator_count=1,  # 1 GPU
+    machine_type='n2-standard-8',  # N2 with modern CPUs (Cascade Lake, 8 vCPUs)
+    accelerator_type=None,  # CPU-only training (no GPU)
+    accelerator_count=0,  # No GPU
     use_spot=True,  # Use spot instances for faster provisioning & lower cost
     dataset_version=None,  # Dataset version (e.g., 'v1', 'v2')
     model_type='tft',  # Model type (e.g., 'tft', 'lstm', 'transformer')
@@ -138,11 +138,12 @@ def submit_training_job(
     labels = {
         'model_type': model_type.lower().replace('_', '-'),
         'job_name': job_name.lower().replace('_', '-'),
+        'job_type': 'single-training',  # Distinguish from HP tuning jobs
     }
     if dataset_version:
         labels['dataset_version'] = dataset_version.lower().replace('/', '-').replace('_', '-')
     
-    # Try to extract date range from dataset metadata (source of truth)
+    # Try to extract date range and hyperparams from dataset metadata
     try:
         # Parse dataset version to find metadata file
         # dataset_version can be "v1" or "model_type/v1"
@@ -157,19 +158,45 @@ def submit_training_job(
             with open(dataset_path, 'r') as f:
                 dataset_metadata = yaml.safe_load(f)
             
-            start_date = dataset_metadata.get('start_date', '')
-            end_date = dataset_metadata.get('end_date', '')
+            # Extract data section (metadata has nested 'data' section in v11+)
+            data_config = dataset_metadata.get('data', dataset_metadata)
+            
+            # Date range
+            start_date = data_config.get('start_date', '')
+            end_date = data_config.get('end_date', '')
             
             if start_date:
                 # GCP labels: lowercase, alphanumeric, hyphens, underscores only
                 labels['start_date'] = start_date.replace('/', '-')
             if end_date:
                 labels['end_date'] = end_date.replace('/', '-')
+            
+            # Data configuration (useful for filtering)
+            if 'lookback_window' in data_config:
+                labels['lookback'] = str(data_config['lookback_window'])
+            if 'prediction_horizons' in data_config:
+                horizons = data_config['prediction_horizons']
+                labels['num_horizons'] = str(len(horizons))
+                # Format horizons as underscore-separated string (e.g., "7_14_28")
+                labels['horizons'] = '_'.join(map(str, horizons))
         else:
             print(f"   ⚠️  Dataset metadata not found: {dataset_path}")
     except Exception as e:
-        # Non-critical, continue without date labels
-        print(f"   ⚠️  Could not extract date range from dataset: {e}")
+        # Non-critical, continue without metadata labels
+        print(f"   ⚠️  Could not extract metadata: {e}")
+    
+    # Add FinCast enabled label from model config
+    try:
+        config_path = f"configs/model_{model_type}_config.yaml"
+        if Path(config_path).exists():
+            with open(config_path, 'r') as f:
+                model_config = yaml.safe_load(f)
+                fincast_enabled = model_config.get('fincast', {}).get('enabled', False)
+                labels['fincast'] = 'enabled' if fincast_enabled else 'disabled'
+    except Exception as e:
+        # Non-critical, default to disabled
+        labels['fincast'] = 'disabled'
+        print(f"   ⚠️  Could not read FinCast status from config: {e}")
     
     print(f"\n🏷️  Adding labels for identification:")
     for key, value in labels.items():

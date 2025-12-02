@@ -196,7 +196,7 @@ data:
   
   # Time series parameters
   lookback_window: 192        # 192 days lookback
-  prediction_horizons: [4, 8, 16]  # EXACT MATCH to decoder transformer (was [7,14,30])
+  prediction_horizons: [7, 14, 28]  # EXACT MATCH to decoder transformer (was [7,14,30])
   
   # Normalization
   normalize: true
@@ -480,7 +480,7 @@ fincast:
 logging:
   log_level: 'INFO'
   log_dir: 'logs/tft'
-  tensorboard: false  # Enable for Vertex AI integration
+  tensorboard: true  # Enable for Vertex AI integration
   mlflow: false
   
   # Experiment tracking
