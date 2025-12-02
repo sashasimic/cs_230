@@ -1378,6 +1378,10 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
         'Temporal Fusion Transformer', config, total_params, trainable_params,
         additional_model_info
     )
+    
+    # Log training hyperparameters for HP tuning comparison
+    tb_utils.log_training_hyperparameters(writer, training_config, model_config)
+    
     print(f"\u2705 Logged dataset and model info to TensorBoard\n")
     
     # Setup optimizer and loss

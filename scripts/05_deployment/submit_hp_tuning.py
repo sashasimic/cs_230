@@ -41,6 +41,7 @@ def submit_hyperparameter_tuning_job(
     parallel_trial_count=4,  # How many to run simultaneously
     dataset_version=None,  # Dataset version (e.g., 'v1', 'v2')
     model_type='tft',  # Model type (e.g., 'tft', 'lstm', 'transformer')
+    phase=1,  # HP tuning phase (1=architecture, 2=regularization)
 ):
     """
     Submit a hyperparameter tuning job using Vertex AI's native service.
@@ -69,7 +70,10 @@ def submit_hyperparameter_tuning_job(
     )
     
     print(f"\n{'='*80}")
-    print(f"   Vertex AI Hyperparameter Tuning Job")
+    if phase == 2:
+        print(f"   Phase 2: Regularization Tuning (FinCast Prep)")
+    else:
+        print(f"   Phase 1: Architecture Search")
     print(f"{'='*80}")
     print(f"Job Name: {job_name}")
     print(f"Model Type: {model_type}")
@@ -81,40 +85,75 @@ def submit_hyperparameter_tuning_job(
         print(f"Dataset Version: {full_dataset_version} (shared across all trials)")
     else:
         print(f"Dataset: Each trial will generate from BigQuery")
+    
+    if phase == 2:
+        print(f"\n🔒 LOCKED (Phase 1 Winners):")
+        print(f"   - hidden_size: 128")
+        print(f"   - lstm_layers: 2")
+        print(f"   - attention_layers: 2")
+        print(f"   - attention_heads: 8")
+        print(f"   - batch_size: 64")
+        print(f"   - learning_rate: 5e-5")
+        print(f"\n🎯 TUNING (Phase 2):")
+        print(f"   - dropout: [0.35, 0.40, 0.45, 0.50]")
+        print(f"   - weight_decay: [0.0, 0.01, 0.02, 0.03]")
+    
     print(f"{'='*80}\n")
     
-    # Define hyperparameter search space
-    # TFT-specific parameter ranges based on model architecture
-    hyperparameter_specs = {
-        'hidden_size': hpt.DiscreteParameterSpec(
-            values=[64, 128],  # TFT benefits from larger hidden sizes
-            scale='linear'
-        ),
-        'lstm_layers': hpt.DiscreteParameterSpec(
-            values=[1, 2],  # LSTM layers (1=baseline, 2=deeper)
-            scale='linear'
-        ),
-        'attention_layers': hpt.DiscreteParameterSpec(
-            values=[1, 2, 3],  # Transformer encoder layers (1=shallow, 2=baseline, 3=deep)
-            scale='linear'
-        ),
-        'attention_heads': hpt.DiscreteParameterSpec(
-            values=[4, 8],  # Multi-head attention (must divide hidden_size)
-            scale='linear'
-        ),
-        'learning_rate': hpt.DiscreteParameterSpec(
-            values=[0.00005, 0.0001, 0.0005],  # TFT prefers lower LR
-            scale='linear'
-        ),
-        'dropout': hpt.DiscreteParameterSpec(
-            values=[0.3, 0.4, 0.5],  # Higher dropout for regularization
-            scale='linear'
-        ),
-        'batch_size': hpt.DiscreteParameterSpec(
-            values=[32, 64],  # TFT is memory-intensive
-            scale='linear'
-        ),
-    }
+    # Define hyperparameter search space based on phase
+    if phase == 2:
+        # Phase 2: Lock architecture, tune regularization
+        hyperparameter_specs = {
+            # LOCKED (Phase 1 winners)
+            'hidden_size': hpt.DiscreteParameterSpec(values=[128], scale='linear'),
+            'lstm_layers': hpt.DiscreteParameterSpec(values=[2], scale='linear'),
+            'attention_layers': hpt.DiscreteParameterSpec(values=[2], scale='linear'),
+            'attention_heads': hpt.DiscreteParameterSpec(values=[8], scale='linear'),
+            'learning_rate': hpt.DiscreteParameterSpec(values=[0.00005], scale='linear'),
+            'batch_size': hpt.DiscreteParameterSpec(values=[64], scale='linear'),
+            
+            # TUNING (Phase 2 focus)
+            'dropout': hpt.DiscreteParameterSpec(
+                values=[0.35, 0.40, 0.45, 0.50],  # Tune around Phase 1 value
+                scale='linear'
+            ),
+            'weight_decay': hpt.DiscreteParameterSpec(
+                values=[0.0, 0.01, 0.02, 0.03],  # L2 regularization strength
+                scale='linear'
+            ),
+        }
+    else:
+        # Phase 1: Architecture search (original)
+        hyperparameter_specs = {
+            'hidden_size': hpt.DiscreteParameterSpec(
+                values=[64, 128],
+                scale='linear'
+            ),
+            'lstm_layers': hpt.DiscreteParameterSpec(
+                values=[1, 2],
+                scale='linear'
+            ),
+            'attention_layers': hpt.DiscreteParameterSpec(
+                values=[1, 2, 3],
+                scale='linear'
+            ),
+            'attention_heads': hpt.DiscreteParameterSpec(
+                values=[4, 8],
+                scale='linear'
+            ),
+            'learning_rate': hpt.DiscreteParameterSpec(
+                values=[0.00005, 0.0001, 0.0005],
+                scale='linear'
+            ),
+            'dropout': hpt.DiscreteParameterSpec(
+                values=[0.3, 0.4, 0.5],
+                scale='linear'
+            ),
+            'batch_size': hpt.DiscreteParameterSpec(
+                values=[32, 64],
+                scale='linear'
+            ),
+        }
     
     # Define metrics to track
     # Primary metric (optimized): val_loss
@@ -156,7 +195,8 @@ def submit_hyperparameter_tuning_job(
     labels = {
         'model_type': model_type.lower().replace('_', '-'),
         'job_name': job_name.lower().replace('_', '-'),
-        'job_type': 'hp-tuning',
+        'job_type': f'hp-phase{phase}',
+        'phase': 'regularization' if phase == 2 else 'architecture',
     }
     if dataset_version:
         labels['dataset_version'] = dataset_version.lower().replace('/', '-').replace('_', '-')
@@ -290,18 +330,29 @@ if __name__ == '__main__':
                        help='Model type (e.g., tft, lstm, transformer). Default: tft')
     parser.add_argument('--job-name', type=str, default=None,
                        help='Job name (auto-generated if not provided)')
+    parser.add_argument('--phase', type=int, default=1, choices=[1, 2],
+                       help='HP tuning phase: 1=architecture search, 2=regularization tuning (default: 1)')
+    parser.add_argument('--max-trials', type=int, default=None,
+                       help='Max trials (default: 20 for phase 1, 16 for phase 2)')
+    parser.add_argument('--parallel-trials', type=int, default=None,
+                       help='Parallel trials (default: 3 for phase 1, 4 for phase 2)')
     args = parser.parse_args()
+    
+    # Set defaults based on phase
+    max_trials = args.max_trials or (16 if args.phase == 2 else 20)
+    parallel_trials = args.parallel_trials or (4 if args.phase == 2 else 3)
     
     # CPU-only (slower but cheaper)
     submit_hyperparameter_tuning_job(
         job_name=args.job_name,
         dataset_version=args.dataset_version,
         model_type=args.model_type,
+        phase=args.phase,
         machine_type='e2-highmem-4',         # CPU-only: 32GB RAM (~$0.21/hr)
         accelerator_type=None,
         accelerator_count=0,
-        max_trial_count=20,
-        parallel_trial_count=3,
+        max_trial_count=max_trials,
+        parallel_trial_count=parallel_trials,
     )
     
     # CPU-only option (uncomment to use - cheaper but slower)

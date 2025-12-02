@@ -238,6 +238,61 @@ def log_experiment_metadata(
         print("   ✅ Logged dataset and model info to TensorBoard")
 
 
+def log_training_hyperparameters(
+    writer: Any,
+    training_config: Dict[str, Any],
+    model_config: Dict[str, Any]
+) -> None:
+    """
+    Log training hyperparameters as text to TensorBoard for easy comparison.
+    
+    Args:
+        writer: TensorBoard SummaryWriter
+        training_config: Training configuration dict
+        model_config: Model configuration dict
+    """
+    if writer is None:
+        return
+    
+    try:
+        # Extract key hyperparameters
+        hparam_text = f"""
+# Training Hyperparameters
+
+## Architecture
+- **Hidden Size**: {model_config.get('hidden_size', 'N/A')}
+- **LSTM Layers**: {model_config.get('lstm_layers', 0)}
+- **Attention Layers**: {model_config.get('attention_layers', 1)}
+- **Attention Heads**: {model_config.get('attention_heads', 'N/A')}
+- **Use Variable Selection**: {model_config.get('use_variable_selection', False)}
+- **Use Static Enrichment**: {model_config.get('use_static_enrichment', False)}
+
+## Regularization
+- **Dropout**: {model_config.get('dropout', 'N/A')}
+- **Weight Decay (L2)**: {training_config.get('weight_decay', 0.0)}
+
+## Training
+- **Learning Rate**: {training_config.get('learning_rate', 'N/A')}
+- **Batch Size**: {training_config.get('batch_size', 'N/A')}
+- **Epochs**: {training_config.get('epochs', 'N/A')}
+- **Gradient Clip Norm**: {training_config.get('gradient_clip_norm', 1.0)}
+
+## Learning Rate Scheduler
+- **Enabled**: {training_config.get('lr_scheduler', {}).get('enabled', False)}
+- **Type**: {training_config.get('lr_scheduler', {}).get('type', 'N/A')}
+- **Factor**: {training_config.get('lr_scheduler', {}).get('factor', 'N/A')}
+- **Patience**: {training_config.get('lr_scheduler', {}).get('patience', 'N/A')}
+
+## Early Stopping
+- **Enabled**: {training_config.get('early_stopping', {}).get('enabled', False)}
+- **Patience**: {training_config.get('early_stopping', {}).get('patience', 'N/A')}
+"""
+        writer.add_text('Experiment/Hyperparameters', hparam_text, 0)
+        print("   ✅ Logged training hyperparameters to TensorBoard")
+    except Exception as e:
+        print(f"   ⚠️  Failed to log training hyperparameters: {e}")
+
+
 def log_hyperparameters(
     writer: Any,
     hparams: Dict[str, Any],
