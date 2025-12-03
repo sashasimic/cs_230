@@ -458,6 +458,12 @@ python scripts/05_deployment/submit_job.py --dataset-version v1
 python scripts/05_deployment/submit_job.py \
   --dataset-version v1 \
   --machine-type n1-highmem-8
+
+# Or submit HP tuning job
+python scripts/05_deployment/submit_hp_tuning.py \                 
+  --phase 1 \
+  --dataset-version v22 \
+  --model-type tft
 ```
 
 **Monitor Training:**

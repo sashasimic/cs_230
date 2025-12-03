@@ -1266,30 +1266,47 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
         import traceback
         traceback.print_exc()
     
-    # Output targets - read from dataset metadata if available, otherwise from config
-    horizons_config = None
-    if dataset_version:
-        # Read horizons from data/processed/metadata.yaml (populated by local copy or Vertex AI download)
-        try:
-            metadata_path = Path('data/processed/metadata.yaml')
-            
-            if metadata_path.exists():
-                with open(metadata_path, 'r') as f:
-                    dataset_metadata = yaml.safe_load(f)
-                    horizons_config = dataset_metadata.get('prediction_horizons', None)
-                    if horizons_config:
-                        print(f"\n✅ Using prediction horizons from dataset metadata: {horizons_config}")
-        except Exception as e:
-            print(f"\n⚠️  Could not read horizons from metadata: {e}")
+    # Output targets - MUST come from dataset metadata (single source of truth)
+    metadata_path = Path('data/processed/metadata.yaml')
     
-    # Fallback to config if not found in metadata
-    if horizons_config is None:
-        horizons_config = config['data']['prediction_horizons']
-        print(f"\n📄 Using prediction horizons from config: {horizons_config}")
+    if not metadata_path.exists():
+        raise FileNotFoundError(
+            f"\n❌ Dataset metadata not found: {metadata_path}\n"
+            f"   Prediction horizons MUST come from dataset metadata.\n"
+            f"   Please ensure you're using a dataset version or have generated data locally."
+        )
+    
+    try:
+        with open(metadata_path, 'r') as f:
+            dataset_metadata = yaml.safe_load(f)
+            # Extract from 'data' section (v11+ metadata structure)
+            data_config = dataset_metadata.get('data', dataset_metadata)
+            horizons_config = data_config.get('prediction_horizons', None)
+            
+            if not horizons_config:
+                raise ValueError(
+                    f"\n❌ 'prediction_horizons' not found in dataset metadata!\n"
+                    f"   Metadata structure: {list(dataset_metadata.keys())}\n"
+                    f"   Data section keys: {list(data_config.keys()) if data_config else 'None'}\n"
+                    f"   Dataset metadata is the single source of truth - config fallback removed."
+                )
+            
+            print(f"\n✅ Using prediction horizons from dataset metadata: {horizons_config}")
+    except Exception as e:
+        raise RuntimeError(
+            f"\n❌ Failed to read prediction horizons from dataset metadata: {e}\n"
+            f"   Metadata path: {metadata_path}\n"
+            f"   Dataset metadata is required - no config fallback."
+        ) from e
     
     print(f"\n🎯 Output Targets ({len(horizons_config)} horizons):")
     for i, h in enumerate(horizons_config, 1):
         print(f"  {i}. Horizon {h} (target_{h}_periods_ahead)")
+    
+    # ⚠️ CRITICAL: Override config with dataset metadata horizons
+    # The model reads num_horizons from config['data']['prediction_horizons']
+    config['data']['prediction_horizons'] = horizons_config
+    print(f"\n✅ Updated config['data']['prediction_horizons'] = {horizons_config}")
     
     # Setup device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -1360,16 +1377,29 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     print(f"  Trainable parameters: {trainable_params:,}")
     
     # Log experiment metadata to TensorBoard
+    # Only include enabled components
     additional_model_info = {
         'Model Type': 'Temporal Fusion Transformer',
         'Hidden Size': model_config['hidden_size'],
-        'LSTM Layers': model_config.get('lstm_layers', 0),
         'Attention Heads': model_config['attention_heads'],
         'Attention Layers': model_config.get('attention_layers', 1),
         'Dropout': model_config['dropout'],
         'Total Parameters': f"{total_params:,}",
         'Trainable Parameters': f"{trainable_params:,}"
     }
+    
+    # Conditionally add enabled components
+    if model_config.get('use_lstm', False):
+        additional_model_info['LSTM Layers'] = model_config.get('lstm_layers', 1)
+    
+    if model_config.get('use_variable_selection', False):
+        additional_model_info['Variable Selection Network'] = 'Enabled'
+    
+    if model_config.get('use_static_enrichment', False):
+        additional_model_info['Static Enrichment'] = 'Enabled'
+    
+    if model_config.get('use_position_wise_grn', False):
+        additional_model_info['Position-wise GRN'] = 'Enabled'
     
     tb_utils.log_experiment_metadata(
         writer, dataset_version, start_date, end_date, horizons_config,

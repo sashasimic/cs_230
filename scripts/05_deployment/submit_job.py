@@ -157,19 +157,45 @@ def submit_training_job(
             with open(dataset_path, 'r') as f:
                 dataset_metadata = yaml.safe_load(f)
             
-            start_date = dataset_metadata.get('start_date', '')
-            end_date = dataset_metadata.get('end_date', '')
+            # Extract data section (metadata has nested 'data' section in v11+)
+            data_config = dataset_metadata.get('data', dataset_metadata)
+            
+            # Date range
+            start_date = data_config.get('start_date', '')
+            end_date = data_config.get('end_date', '')
             
             if start_date:
                 # GCP labels: lowercase, alphanumeric, hyphens, underscores only
                 labels['start_date'] = start_date.replace('/', '-')
             if end_date:
                 labels['end_date'] = end_date.replace('/', '-')
+            
+            # Data configuration (useful for filtering)
+            if 'lookback_window' in data_config:
+                labels['lookback'] = str(data_config['lookback_window'])
+            if 'prediction_horizons' in data_config:
+                horizons = data_config['prediction_horizons']
+                labels['num_horizons'] = str(len(horizons))
+                # Format horizons as underscore-separated string (e.g., "7_14_28")
+                labels['horizons'] = '_'.join(map(str, horizons))
         else:
             print(f"   ⚠️  Dataset metadata not found: {dataset_path}")
     except Exception as e:
-        # Non-critical, continue without date labels
-        print(f"   ⚠️  Could not extract date range from dataset: {e}")
+        # Non-critical, continue without metadata labels
+        print(f"   ⚠️  Could not extract metadata: {e}")
+    
+    # Add FinCast enabled label from model config
+    try:
+        config_path = f"configs/model_{model_type}_config.yaml"
+        if Path(config_path).exists():
+            with open(config_path, 'r') as f:
+                model_config = yaml.safe_load(f)
+                fincast_enabled = model_config.get('fincast', {}).get('enabled', False)
+                labels['fincast'] = 'enabled' if fincast_enabled else 'disabled'
+    except Exception as e:
+        # Non-critical, default to disabled
+        labels['fincast'] = 'disabled'
+        print(f"   ⚠️  Could not read FinCast status from config: {e}")
     
     print(f"\n🏷️  Adding labels for identification:")
     for key, value in labels.items():

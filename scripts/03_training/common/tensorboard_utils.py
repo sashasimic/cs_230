@@ -255,17 +255,36 @@ def log_training_hyperparameters(
         return
     
     try:
+        # Build architecture section with conditional components
+        arch_lines = [
+            f"- **Hidden Size**: {model_config.get('hidden_size', 'N/A')}"
+        ]
+        
+        # Only show LSTM if enabled
+        if model_config.get('use_lstm', False):
+            arch_lines.append(f"- **LSTM Layers**: {model_config.get('lstm_layers', 1)}")
+        
+        arch_lines.extend([
+            f"- **Attention Layers**: {model_config.get('attention_layers', 1)}",
+            f"- **Attention Heads**: {model_config.get('attention_heads', 'N/A')}"
+        ])
+        
+        # Show optional components if enabled
+        if model_config.get('use_variable_selection', False):
+            arch_lines.append("- **Variable Selection Network**: Enabled")
+        if model_config.get('use_static_enrichment', False):
+            arch_lines.append("- **Static Enrichment**: Enabled")
+        if model_config.get('use_position_wise_grn', False):
+            arch_lines.append("- **Position-wise GRN**: Enabled")
+        
+        arch_section = "\n".join(arch_lines)
+        
         # Extract key hyperparameters
         hparam_text = f"""
 # Training Hyperparameters
 
 ## Architecture
-- **Hidden Size**: {model_config.get('hidden_size', 'N/A')}
-- **LSTM Layers**: {model_config.get('lstm_layers', 0)}
-- **Attention Layers**: {model_config.get('attention_layers', 1)}
-- **Attention Heads**: {model_config.get('attention_heads', 'N/A')}
-- **Use Variable Selection**: {model_config.get('use_variable_selection', False)}
-- **Use Static Enrichment**: {model_config.get('use_static_enrichment', False)}
+{arch_section}
 
 ## Regularization
 - **Dropout**: {model_config.get('dropout', 'N/A')}

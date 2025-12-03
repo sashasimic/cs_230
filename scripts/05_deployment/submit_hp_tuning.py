@@ -72,6 +72,8 @@ def submit_hyperparameter_tuning_job(
     print(f"\n{'='*80}")
     if phase == 2:
         print(f"   Phase 2: Regularization Tuning (FinCast Prep)")
+    elif phase == '1a':
+        print(f"   Phase 1a: Component Ablation Study")
     else:
         print(f"   Phase 1: Architecture Search")
     print(f"{'='*80}")
@@ -97,6 +99,20 @@ def submit_hyperparameter_tuning_job(
         print(f"\n🎯 TUNING (Phase 2):")
         print(f"   - dropout: [0.35, 0.40, 0.45, 0.50]")
         print(f"   - weight_decay: [0.0, 0.01, 0.02, 0.03]")
+    elif phase == '1a':
+        print(f"\n🔒 LOCKED (Phase 1 Winners):")
+        print(f"   - hidden_size: 128")
+        print(f"   - lstm_layers: 2")
+        print(f"   - attention_layers: 2")
+        print(f"   - attention_heads: 4  (best for single horizon)")
+        print(f"   - learning_rate: 5E-5")
+        print(f"   - batch_size: 64")
+        print(f"\n🔬 EXPLORING (Phase 1a):")
+        print(f"   - use_variable_selection (VSN): on/off")
+        print(f"   - use_static_enrichment: on/off")
+        print(f"   - gradient_clip_norm: [0.5, 1.0, 2.0]")
+        print(f"   - weight_decay: [0.0, 0.001, 0.01]")
+        print(f"   - dropout: [0.3, 0.4, 0.5]")
     
     print(f"{'='*80}\n")
     
@@ -121,6 +137,36 @@ def submit_hyperparameter_tuning_job(
                 values=[0.0, 0.01, 0.02, 0.03],  # L2 regularization strength
                 scale='linear'
             ),
+        }
+    elif phase == '1a':
+        # Phase 1a: Component ablation (lock best Phase 1 arch, explore components)
+        hyperparameter_specs = {
+            'use_variable_selection': hpt.DiscreteParameterSpec(
+                values=[0, 1],  # 0=disabled, 1=enabled
+                scale='linear'
+            ),
+            'use_static_enrichment': hpt.DiscreteParameterSpec(
+                values=[0, 1],  # 0=disabled, 1=enabled
+                scale='linear'
+            ),
+            'gradient_clip_norm': hpt.DiscreteParameterSpec(
+                values=[0.5, 1.0, 2.0],  # Gradient clipping threshold
+                scale='linear'
+            ),
+            'weight_decay': hpt.DiscreteParameterSpec(
+                values=[0.0, 0.001, 0.01],  # L2 regularization
+                scale='linear'
+            ),
+            'dropout': hpt.DiscreteParameterSpec(
+                values=[0.3, 0.4, 0.5],  # Re-explore with new components
+                scale='linear'
+            ),
+            'hidden_size': hpt.DiscreteParameterSpec(values=[128], scale='linear'),
+            'lstm_layers': hpt.DiscreteParameterSpec(values=[2], scale='linear'),
+            'attention_layers': hpt.DiscreteParameterSpec(values=[2], scale='linear'),
+            'attention_heads': hpt.DiscreteParameterSpec(values=[4], scale='linear'),
+            'learning_rate': hpt.DiscreteParameterSpec(values=[0.00005], scale='linear'),
+            'batch_size': hpt.DiscreteParameterSpec(values=[64], scale='linear'),
         }
     else:
         # Phase 1: Architecture search (original)
@@ -150,7 +196,7 @@ def submit_hyperparameter_tuning_job(
                 scale='linear'
             ),
             'batch_size': hpt.DiscreteParameterSpec(
-                values=[32, 64],
+                values=[32],
                 scale='linear'
             ),
         }
@@ -217,9 +263,12 @@ def submit_hyperparameter_tuning_job(
                 with open(dataset_path, 'r') as f:
                     dataset_metadata = yaml.safe_load(f)
                 
+                # Extract data section (metadata has nested 'data' section in v11+)
+                data_config = dataset_metadata.get('data', dataset_metadata)
+                
                 # Date range
-                start_date = dataset_metadata.get('start_date', '')
-                end_date = dataset_metadata.get('end_date', '')
+                start_date = data_config.get('start_date', '')
+                end_date = data_config.get('end_date', '')
                 
                 if start_date:
                     # GCP labels: lowercase, alphanumeric, hyphens, underscores only
@@ -228,16 +277,31 @@ def submit_hyperparameter_tuning_job(
                     labels['end_date'] = end_date.replace('/', '-')
                 
                 # Data configuration (useful for filtering)
-                if 'lookback_window' in dataset_metadata:
-                    labels['lookback'] = str(dataset_metadata['lookback_window'])
-                if 'prediction_horizons' in dataset_metadata:
-                    horizons = dataset_metadata['prediction_horizons']
+                if 'lookback_window' in data_config:
+                    labels['lookback'] = str(data_config['lookback_window'])
+                if 'prediction_horizons' in data_config:
+                    horizons = data_config['prediction_horizons']
                     labels['num_horizons'] = str(len(horizons))
+                    # Format horizons as underscore-separated string (e.g., "7_14_28")
+                    labels['horizons'] = '_'.join(map(str, horizons))
             else:
                 print(f"   ⚠️  Dataset metadata not found: {dataset_path}")
     except Exception as e:
-        # Non-critical, continue without date labels
+        # Non-critical, continue without metadata labels
         print(f"   ⚠️  Could not extract metadata: {e}")
+    
+    # Add FinCast enabled label from model config
+    try:
+        config_path = f"configs/model_{model_type}_config.yaml"
+        if Path(config_path).exists():
+            with open(config_path, 'r') as f:
+                model_config = yaml.safe_load(f)
+                fincast_enabled = model_config.get('fincast', {}).get('enabled', False)
+                labels['fincast'] = 'enabled' if fincast_enabled else 'disabled'
+    except Exception as e:
+        # Non-critical, default to disabled
+        labels['fincast'] = 'disabled'
+        print(f"   ⚠️  Could not read FinCast status from config: {e}")
     
     # Add phase-specific labels
     if phase == 2:
@@ -249,6 +313,15 @@ def submit_hyperparameter_tuning_job(
         labels['batch_size'] = '64'
         labels['lr'] = '5e-05'  # 'learning_rate' is too long
         labels['tuning'] = 'dropout-weight_decay'
+    elif phase == '1a':
+        # Phase 1a: Component ablation (lock best arch from Phase 1)
+        labels['hidden_size'] = '128'
+        labels['lstm_layers'] = '2'
+        labels['attention_layers'] = '2'
+        labels['attention_heads'] = '4'  # Best from Phase 1 (single horizon)
+        labels['batch_size'] = '64'
+        labels['lr'] = '5e-05'  # Best from Phase 1 (single horizon)
+        labels['tuning'] = 'components'  # VSN, static_enrich, grad_clip, weight_decay
     else:
         # Phase 1: Indicate architecture search
         labels['tuning'] = 'architecture'
@@ -353,25 +426,28 @@ if __name__ == '__main__':
                        help='Model type (e.g., tft, lstm, transformer). Default: tft')
     parser.add_argument('--job-name', type=str, default=None,
                        help='Job name (auto-generated if not provided)')
-    parser.add_argument('--phase', type=int, default=1, choices=[1, 2],
-                       help='HP tuning phase: 1=architecture search, 2=regularization tuning (default: 1)')
+    parser.add_argument('--phase', type=str, default='1', choices=['1', '1a', '2'],
+                       help='HP tuning phase: 1=architecture search, 1a=component ablation, 2=regularization tuning (default: 1)')
     parser.add_argument('--max-trials', type=int, default=None,
-                       help='Max trials (default: 20 for phase 1, 16 for phase 2)')
+                       help='Max trials (default: 20 for phase 1/1a, 16 for phase 2)')
     parser.add_argument('--parallel-trials', type=int, default=None,
-                       help='Parallel trials (default: 3 for phase 1, 4 for phase 2)')
+                       help='Parallel trials (default: 3 for phase 1/1a, 4 for phase 2)')
     args = parser.parse_args()
     
+    # Convert phase to appropriate type for backward compatibility
+    phase = int(args.phase) if args.phase in ['1', '2'] else args.phase
+    
     # Set defaults based on phase
-    max_trials = args.max_trials or (16 if args.phase == 2 else 20)
-    parallel_trials = args.parallel_trials or (4 if args.phase == 2 else 3)
+    max_trials = args.max_trials or (16 if phase == 2 else 20)
+    parallel_trials = args.parallel_trials or (4 if phase == 2 else 3)
     
     # CPU-only (slower but cheaper)
     submit_hyperparameter_tuning_job(
         job_name=args.job_name,
         dataset_version=args.dataset_version,
         model_type=args.model_type,
-        phase=args.phase,
-        machine_type='e2-highmem-4',         # CPU-only: 32GB RAM (~$0.21/hr)
+        phase=phase,
+        machine_type='e2-highmem-8',         # CPU-only: 64GB RAM (~$0.42/hr, avoids N2 quota)
         accelerator_type=None,
         accelerator_count=0,
         max_trial_count=max_trials,

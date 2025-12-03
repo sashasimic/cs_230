@@ -191,7 +191,7 @@ data:
   
   # Time series parameters
   lookback_window: 192        # 192 days lookback
-  prediction_horizons: [7, 14, 28]  # EXACT MATCH to decoder transformer (was [7,14,30])
+  prediction_horizons: [14]  # EXACT MATCH to decoder transformer (was [7,14,30])
   
   # Normalization
   normalize: true

@@ -38,6 +38,14 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=None)
     parser.add_argument('--weight_decay', type=float, default=None)
     
+    # Phase 1a: Component ablation arguments
+    parser.add_argument('--use_variable_selection', type=int, default=None, choices=[0, 1],
+                       help='Enable Variable Selection Network: 0=disabled, 1=enabled')
+    parser.add_argument('--use_static_enrichment', type=int, default=None, choices=[0, 1],
+                       help='Enable static enrichment: 0=disabled, 1=enabled')
+    parser.add_argument('--gradient_clip_norm', type=float, default=None,
+                       help='Gradient clipping threshold (e.g., 0.5, 1.0, 2.0)')
+    
     # Training settings
     parser.add_argument('--epochs', type=int, default=None)
     parser.add_argument('--early_stopping_patience', type=int, default=None)
@@ -89,6 +97,15 @@ def update_config_with_hyperparameters(config_path: str, args) -> str:
         config['training']['learning_rate'] = args.learning_rate
     if args.weight_decay is not None:
         config['training']['weight_decay'] = args.weight_decay
+    
+    # Phase 1a: Component ablation overrides
+    if args.use_variable_selection is not None:
+        config['model']['use_variable_selection'] = bool(args.use_variable_selection)
+    if args.use_static_enrichment is not None:
+        config['model']['use_static_enrichment'] = bool(args.use_static_enrichment)
+    if args.gradient_clip_norm is not None:
+        config['training']['gradient_clip_norm'] = args.gradient_clip_norm
+    
     if args.early_stopping_patience is not None and 'early_stopping' in config.get('training', {}):
         config['training']['early_stopping']['patience'] = args.early_stopping_patience
     
