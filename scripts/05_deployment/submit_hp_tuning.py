@@ -136,7 +136,7 @@ def submit_hyperparameter_tuning_job(
                 scale='linear'
             ),
             'attention_layers': hpt.DiscreteParameterSpec(
-                values=[1, 2, 3],  # Transformer encoder layers (1=shallow, 2=baseline, 3=deep)
+                values=[1, 2],  # Transformer encoder layers (1=shallow, 2=baseline, 3=deep)
                 scale='linear'
             ),
             'attention_heads': hpt.DiscreteParameterSpec(

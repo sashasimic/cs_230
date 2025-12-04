@@ -18,69 +18,128 @@ bigquery:
     frequency: '1d'
 
 data:
-  # Tickers to load (same as decoder_transformer)
+  # ============================================================
+  # TICKER DATA SOURCE & FEATURE GROUPS
+  # ============================================================
+  # All tickers loaded from BigQuery (Polygon.io)
+  # EXACT MATCH TO TFT (27 tickers)
   tickers:
-    symbols:
-      # Equity indices
-      - SPY
-      - QQQ
-      - IWM
-      - RSP
-      # Sectors
-      - XLF
-      - XLI
-      - XLY
-      - XLK
-      - XLE
-      - XLB
-      - XLP
-      - XLV
-      - XLU
-      - XLRE
-      # Fixed income
-      - TLT
-      - IEF
-      - TIP
-      - SHY
-      # Credit
-      - LQD
-      - HYG
-      # Commodities
-      - DBC
-      - USO
-      - GLD
-      # - CPER
-      # Agriculture (target)
-      - DBA
-      - WEAT
-      - SOYB
-      # Currency
-      - UUP
-    frequency: 'daily'
-    
-    # Raw OHLCV features from BigQuery
-    raw_features:
-      - close
-      - volume
-    
-    # Synthetic/technical indicator features
-    synthetic_features:
-      - sma_50
-      - sma_200
+    - SPY      # S&P 500
+    - QQQ      # Nasdaq 100
+    - IWM      # Russell 2000
+    - RSP      # Equal-Weight S&P 500
+    - XLF      # Financials
+    - XLI      # Industrials
+    - XLY      # Consumer Discretionary
+    - XLK      # Technology
+    - XLE      # Energy
+    - XLB      # Materials
+    - XLP      # Consumer Staples
+    - XLV      # Health Care
+    - XLU      # Utilities
+    - XLRE     # Real Estate
+    - TLT      # 20Y Treasury
+    - IEF      # 7-10Y Treasury
+    - TIP      # TIPS
+    - SHY      # 1-3Y Treasury
+    - LQD      # Investment Grade Bonds
+    - HYG      # High Yield Bonds
+    - UUP      # US Dollar Index
+    - DBC      # Commodities Index
+    - USO      # Crude Oil
+    - GLD      # Gold
+    - DBA      # Agriculture ETF
+    - WEAT     # Wheat
+    - SOYB     # Soybean
+    - CORN     # Corn
+    - CANE     # Sugar
   
-  start_date: '2016-04-01'  # Aligned with decoder_transformer and TFT
-  end_date: '2025-11-13'
+  # Ticker grouping - Organize tickers into macro categories
+  ticker_groups:
+    equity_largecap:
+      tickers: [SPY, QQQ, RSP, IWM]
+      description: "Large cap indices - economic bellwether"
+    
+    sectors_early_cycle:
+      tickers: [XLF, XLI]
+      description: "Financials & Industrials - expansion leaders"
+    
+    sectors_cyclical_growth:
+      tickers: [XLY, XLK]
+      description: "Consumer Discretionary & Tech - growth phase"
+    
+    sectors_inflation_sensitive:
+      tickers: [XLE, XLB]
+      description: "Energy & Materials - cost-push inflation"
+    
+    sectors_defensive:
+      tickers: [XLP, XLV, XLU, XLRE]
+      description: "Staples, Healthcare, Utilities, Real Estate"
+    
+    rates:
+      tickers: [TLT, IEF, TIP, SHY]
+      description: "Treasury yields - inflation expectations"
+    
+    credit:
+      tickers: [LQD, HYG]
+      description: "Corporate credit - credit cycle"
+    
+    dollar:
+      tickers: [UUP]
+      description: "US Dollar - imported inflation valve"
+    
+    commodities_energy:
+      tickers: [DBC, USO, GLD]
+      description: "Energy & commodities - direct inflation drivers"
+    
+    agriculture:
+      tickers: [DBA, WEAT, SOYB, CORN, CANE]
+      description: "Food commodities - comprehensive coverage"
+  
+  # ============================================================
+  # TARGET CONFIGURATION
+  # ============================================================
+  target:
+    group: agriculture
+    basket_tickers: [DBA, WEAT, SOYB, CORN, CANE]
+    aggregation: mean
+    feature: close
+  
+  # Shared frequency for all tickers
   frequency: 'daily'
-  lookback_window: 192
-  prediction_horizons: [7, 14, 30]
   
-  # Target variable (required by data loader)
-  target: 'agriculture_basket_returns'
-  target_type: 'agriculture_basket'
-  target_metric: 'returns'
-  train_ratio: 0.70
+  # Shared raw OHLCV features
+  ticker_raw_features:
+    - close
+    - volume
+  
+  # Shared technical indicators for all tickers
+  ticker_synthetic_features:
+    - sma_50
+    - sma_200
+  
+  # ============================================================
+  # TICKER GROUP FEATURES
+  # ============================================================
+  ticker_group_features:
+    - ret_mean
+    - ret_std
+    - trend50_mean
+    - breadth_above50
+    - vol_rel_mean
+  
+  # ============================================================
+  # GENERAL DATA CONFIGURATION
+  # ============================================================
+  start_date: '2018-05-01'  # Match TFT
+  end_date: '2025-10-22'    # Match TFT
+  train_ratio: 0.7
   val_ratio: 0.15
   test_ratio: 0.15
+  
+  # Time series parameters
+  lookback_window: 192
+  prediction_horizons: [7,14,28]  # Match TFT (was [7,14,30])
   
   # Normalization
   normalize: true
@@ -95,6 +154,9 @@ data:
     log_stats: true
     max_fill_limit: 5
   
+  # ============================================================
+  # GDELT SENTIMENT DATA SOURCE
+  # ============================================================
   gdelt:
     enabled: true
     frequency: '1d'
@@ -107,40 +169,36 @@ data:
     normalize_counts: true
     include_lags: true
     lag_periods: [1, 7, 30]
+  
+  # ============================================================
+  # DATA AUGMENTATION
+  # ============================================================
+  augmentation:
+    enabled: false
+    seed: 42
 
 model:
   type: 'lstm'
   
+  # Feature configuration
+  feature_type: 'individual'  # Use individual ticker features (no aggregation)
+  
+  # Time-varying features (loaded dynamically from dataset - single source of truth)
+  time_varying_unknown: []  # Populated from actual data (~127 individual ticker features)
+  
   # LSTM architecture
   hidden_dim: 96        # LSTM hidden dimension
   num_layers: 3         # Number of LSTM layers
-  dropout: 0.25          # Dropout rate
+  dropout: 0.25         # Dropout rate
   
   # Note: LSTM is forward-only (no bidirectional) to prevent data leakage in forecasting
-  
-  # Feature columns (must match decoder_transformer for consistency)
-  time_varying_known:
-    - month_sin
-    - month_cos
-    - is_weekend
-  time_varying_unknown:
-    - close
-    - volume
-    - sma_50
-    - sma_200
-    - weighted_avg_tone
-    - weighted_avg_polarity
-    - num_articles
-    - num_sources
-    - sentiment_lag_1
-    - sentiment_lag_7
-    - sentiment_lag_30
+  # Actual feature list loaded from dataset (feature_names.txt) - single source of truth
 
 training:
   batch_size: 64
   epochs: 200  # Number of training epochs (configurable)
-  learning_rate: 0.001
-  weight_decay: 0.01
+  learning_rate: 0.0005
+  weight_decay: 0.001
   gradient_clip_norm: 1.0
   random_seed: 42  # Fixed seed for reproducibility
   

@@ -1236,57 +1236,43 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     total = train_samples + val_samples + test_samples
     print(f"  Total sequences: {total:,} (train: {train_samples:,}, val: {val_samples:,}, test: {test_samples:,})")
     
-    # Load and display feature metadata
-    time_varying_known = config['model'].get('time_varying_known', [])
-    time_varying_unknown = config['model'].get('time_varying_unknown', [])
+    # Load and display actual features from dataset (single source of truth)
+    print(f"\n📋 ACTUAL FEATURES USED IN TRAINING ({num_features}):")
+    print(f"   (Features from dataset - single source of truth)")
     
-    print(f"\n🔑 TIME-VARYING KNOWN Features ({len(time_varying_known)}):")
-    for i, feat in enumerate(time_varying_known, 1):
-        print(f"  {i:2d}. {feat}")
-    
-    print(f"\n📊 TIME-VARYING UNKNOWN Features ({len(time_varying_unknown)}):")
-    for i, feat in enumerate(time_varying_unknown, 1):
-        print(f"  {i:2d}. {feat}")
-    
-    # Display static features if configured
-    static_features = config['model'].get('static_features', [])
-    if static_features:
-        print(f"\n📌 STATIC Features ({len(static_features)}):")
-        for i, feat in enumerate(static_features, 1):
-            print(f"  {i:2d}. {feat}")
-    
-    total_config_features = len(time_varying_known) + len(time_varying_unknown)
-    print(f"\n➡️  Total Features (config): {total_config_features}")
-    print(f"➡️  Total Features (actual data): {num_features}")
-    if static_features:
-        print(f"➡️  Static Features: {len(static_features)}")
-    
-    # Load and print actual final features being used
-    # Note: Config shows 14 base features, but data has more after pivoting (e.g., close_SPY, close_QQQ)
     try:
-        # Always use data/processed/metadata.yaml (populated by local copy or Vertex AI download)
-        metadata_path = Path('data/processed/metadata.yaml')
+        # Read from feature_names.txt (generated with dataset)
+        feature_names_path = Path('data/processed/feature_names.txt')
         
-        if metadata_path.exists():
-            with open(metadata_path, 'r') as f:
-                metadata = yaml.safe_load(f)
-                if 'features' in metadata:
-                    actual_features = metadata['features']
-                    print(f"\n📋 ACTUAL FEATURES USED IN TRAINING ({len(actual_features)}):")
-                    print(f"   (Ticker-specific features created through pivoting)")
-                    print(f"")
-                    for i, feat in enumerate(actual_features, 1):
-                        print(f"   {i:2d}. {feat}")
-                else:
-                    print(f"\n⚠️  'features' key not found in metadata.yaml")
+        if feature_names_path.exists():
+            with open(feature_names_path, 'r') as f:
+                actual_features = [line.strip() for line in f if line.strip()]
+            
+            if len(actual_features) == num_features:
+                print(f"\n   Showing first 10 features (out of {len(actual_features)}):")
+                for i, feat in enumerate(actual_features[:10], 1):
+                    print(f"   {i:2d}. {feat}")
+                if len(actual_features) > 10:
+                    print(f"   ... and {len(actual_features) - 10} more")
+                print(f"\n   Full feature list saved in: {feature_names_path}")
+            else:
+                print(f"\n⚠️  Feature count mismatch: {len(actual_features)} in file vs {num_features} in data")
+                print(f"   Showing all {len(actual_features)} features from file:")
+                for i, feat in enumerate(actual_features, 1):
+                    print(f"   {i:2d}. {feat}")
         else:
-            print(f"\n⚠️  metadata.yaml not found at {metadata_path}")
-            print(f"   Cannot display individual feature names")
-            print(f"   Config features (14) are expanded to {num_features} after pivoting")
+            print(f"\n⚠️  feature_names.txt not found at {feature_names_path}")
+            print(f"   Using {num_features} features from data (names unavailable)")
     except Exception as e:
-        print(f"\n⚠️  Could not load actual feature names: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"\n⚠️  Could not load feature names: {e}")
+        print(f"   Using {num_features} features from data (names unavailable)")
+    
+    # Display static features if present in data
+    static_features_enabled = config['model'].get('static_features', [])
+    if static_features_enabled:
+        print(f"\n📌 STATIC Features: {len(static_features_enabled)} (from config - used for embedding)")
+        for i, feat in enumerate(static_features_enabled, 1):
+            print(f"   {i:2d}. {feat}")
     
     # Output targets - MUST come from dataset metadata (single source of truth)
     metadata_path = Path('data/processed/metadata.yaml')

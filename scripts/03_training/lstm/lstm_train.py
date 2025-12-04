@@ -381,26 +381,38 @@ def train(
     print("   LSTM Configuration")
     print("="*80)
     
-    # Get prediction horizons - read from dataset metadata if available, otherwise from config
-    horizons = None
-    if dataset_version:
-        # Read horizons from data/processed/metadata.yaml (populated by local copy or Vertex AI download)
-        try:
-            metadata_path = Path('data/processed/metadata.yaml')
-            
-            if metadata_path.exists():
-                with open(metadata_path, 'r') as f:
-                    dataset_metadata = yaml.safe_load(f)
-                    horizons = dataset_metadata.get('prediction_horizons', None)
-                    if horizons:
-                        print(f"\n✅ Using prediction horizons from dataset metadata: {horizons}")
-        except Exception as e:
-            print(f"\n⚠️  Could not read horizons from metadata: {e}")
+    # Get prediction horizons - MUST come from dataset metadata (single source of truth)
+    metadata_path = Path('data/processed/metadata.yaml')
     
-    # Fallback to config if not found in metadata
-    if horizons is None:
-        horizons = config['data'].get('prediction_horizons', [])
-        print(f"\n📄 Using prediction horizons from config: {horizons}")
+    if not metadata_path.exists():
+        raise FileNotFoundError(
+            f"\n❌ Dataset metadata not found: {metadata_path}\n"
+            f"   Prediction horizons MUST come from dataset metadata.\n"
+            f"   Please ensure you're using a dataset version or have generated data locally."
+        )
+    
+    try:
+        with open(metadata_path, 'r') as f:
+            dataset_metadata = yaml.safe_load(f)
+            # Extract from 'data' section (v11+ metadata structure)
+            data_config = dataset_metadata.get('data', dataset_metadata)
+            horizons = data_config.get('prediction_horizons', None)
+            
+            if not horizons:
+                raise ValueError(
+                    f"\n❌ 'prediction_horizons' not found in dataset metadata!\n"
+                    f"   Metadata structure: {list(dataset_metadata.keys())}\n"
+                    f"   Data section keys: {list(data_config.keys()) if data_config else 'None'}\n"
+                    f"   Dataset metadata is the single source of truth - config fallback removed."
+                )
+            
+            print(f"\n✅ Using prediction horizons from dataset metadata: {horizons}")
+    except Exception as e:
+        raise RuntimeError(
+            f"\n❌ Failed to read prediction horizons from dataset metadata: {e}\n"
+            f"   Metadata path: {metadata_path}\n"
+            f"   Dataset metadata is required - no config fallback."
+        ) from e
     
     print(f"\n📊 Data Dimensions:")
     print(f"  Lookback window: {lookback} timesteps")

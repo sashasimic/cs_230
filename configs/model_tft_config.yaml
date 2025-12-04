@@ -196,7 +196,7 @@ data:
   
   # Time series parameters
   lookback_window: 192        # 192 days lookback
-  prediction_horizons: [7, 14, 28]  # EXACT MATCH to decoder transformer (was [7,14,30])
+  prediction_horizons: [28]  # EXACT MATCH to decoder transformer (was [7,14,30])
   
   # Normalization
   normalize: true
@@ -308,11 +308,11 @@ model:
     - month_cos
     - is_weekend
 
-  hidden_size: 64   # Architecture components (granular control)
+  hidden_size: 128   # Architecture components (granular control)
   # Variable selection network (VSN)
-  use_variable_selection: false  # Enable VSN for feature selection
+  use_variable_selection: false  # Enable VSN for implicit regularization + feature selection
   
-  use_lstm: false                # Enable LSTM for sequential processing
+  use_lstm: true                # Enable LSTM for sequential processing
   lstm_layers: 1                 # Number of stacked LSTM layers (1 or 2 recommended)
   use_static_enrichment: false   # DISABLE: Blocks gradients before attention
   use_position_wise_grn: false   # Disable GRN - test pure baseline on augmented data
@@ -321,7 +321,7 @@ model:
   attention_heads: 8
   attention_layers: 1            # Single layer - prevent gradient vanishing
   
-  dropout: 0.45      # Match decoder transformer's dropout
+  dropout: 0.5      # Increased for stronger regularization (was 0.45)
   
   # Static feature embeddings (for ticker and category)
   static_embedding_dim: 32  # Embedding size for static features (reduced from 32)
@@ -360,8 +360,8 @@ training:
   epochs: 200       # Match decoder transformer (was 200)
   learning_rate: 0.00005  # Match decoder transformer exactly
   optimizer: 'adam'
-  weight_decay: 0.02      # Match decoder transformer
-  gradient_clip_norm: 1.0 # Match decoder transformer
+  weight_decay: 0.02      # L2 regularization (matches decoder)
+  gradient_clip_norm: 0.5 # Tighter clipping to prevent large updates (was 1.0)
   
   # Directional loss (for trading alignment)
   use_directional_loss: false # Disable initially (focus on main regression)
@@ -378,9 +378,10 @@ training:
   # Early stopping
   early_stopping:
     enabled: true
-    patience: 30  # Match decoder transformer
+    patience: 15  # More aggressive to prevent overfitting (was 30)
     monitor: 'val_loss'
     mode: 'min'
+    min_delta: 0.001  # Stop if no 0.1% improvement
   
   # Loss function
   loss: 'mse'  # MSE to match decoder transformer (was quantile)

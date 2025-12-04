@@ -634,6 +634,12 @@ class MultiTickerDataLoader:
             print(f"   ✅ Generated {len(group_features_df.columns)} group features")
             print(f"   Total features: {len(all_features)} = {len(group_features_df.columns)} group + {len([f for f in gdelt_features if f in grouped.columns])} GDELT + {len([f for f in time_features if f in grouped.columns])} time")
         else:
+            # For 'individual' mode: auto-populate all_features with all columns (excluding timestamp and target)
+            if feature_type == 'individual' and len(all_features) == 0:
+                all_features = [col for col in grouped.columns 
+                              if col not in ['timestamp', 'target_basket_close']]
+                print(f"   ✅ Auto-populated features for 'individual' mode: {len(all_features)} features")
+            
             # Store final feature list for metadata
             self.final_features = all_features
         
