@@ -156,7 +156,7 @@ data:
   # GDELT SENTIMENT DATA SOURCE (GDELT GKG → BigQuery)
   # ============================================================
   gdelt:
-    enabled: true  # Enable GDELT sentiment features
+    enabled: true  # Disable GDELT sentiment features (v20a: no sentiment)
     frequency: '1d'  # Must match what's stored in BigQuery (use '1d' not 'daily')
     
     # Topic groups to load (references topic_group_id from gdelt.yaml)
@@ -191,7 +191,7 @@ data:
   
   # Time series parameters
   lookback_window: 192        # 192 days lookback
-  prediction_horizons: [14]  # EXACT MATCH to decoder transformer (was [7,14,30])
+  prediction_horizons: [7, 14, 28]  # EXACT MATCH to decoder transformer (was [7,14,30])
   
   # Normalization
   normalize: true
@@ -373,7 +373,7 @@ training:
   # Early stopping
   early_stopping:
     enabled: true
-    patience: 30  # Match decoder transformer
+    patience: 20  # Match decoder transformer
     monitor: 'val_loss'
     mode: 'min'
   

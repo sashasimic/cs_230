@@ -214,3 +214,12 @@ tft/v22:
   gcs_base_path: gs://inflation-prediction-478715-models/datasets/tft/v22/
   raw_dataset_id: projects/233829279510/locations/us-central1/datasets/837508452237443072
   processed_dataset_id: N/A
+tft/v20nosent:
+  version: tft/v20nosent
+  model_type: tft
+  version_number: v20nosent
+  local_path: data/datasets/tft/v20nosent
+  created: '2025-12-04T23:34:34.938867'
+  gcs_base_path: gs://inflation-prediction-478715-models/datasets/tft/v20nosent/
+  raw_dataset_id: projects/233829279510/locations/us-central1/datasets/4600406678393847808
+  processed_dataset_id: N/A

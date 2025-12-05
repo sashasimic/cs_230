@@ -25,6 +25,9 @@ from pathlib import Path
 from typing import Dict, Optional
 from datetime import datetime
 
+# Import benchmark utilities
+from utils import benchmarks
+
 # Set PyTorch to single-threaded mode on Mac
 if sys.platform == 'darwin':
     torch.set_num_threads(1)
@@ -1278,15 +1281,15 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     
     try:
         with open(metadata_path, 'r') as f:
-            dataset_metadata = yaml.safe_load(f)
+            metadata = yaml.safe_load(f)
             # Extract from 'data' section (v11+ metadata structure)
-            data_config = dataset_metadata.get('data', dataset_metadata)
+            data_config = metadata.get('data', metadata)
             horizons_config = data_config.get('prediction_horizons', None)
             
             if not horizons_config:
                 raise ValueError(
                     f"\n❌ 'prediction_horizons' not found in dataset metadata!\n"
-                    f"   Metadata structure: {list(dataset_metadata.keys())}\n"
+                    f"   Metadata structure: {list(metadata.keys())}\n"
                     f"   Data section keys: {list(data_config.keys()) if data_config else 'None'}\n"
                     f"   Dataset metadata is the single source of truth - config fallback removed."
                 )
@@ -1298,6 +1301,14 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
             f"   Metadata path: {metadata_path}\n"
             f"   Dataset metadata is required - no config fallback."
         ) from e
+    
+    # Load feature names from feature_names.txt for benchmark historical returns extraction
+    feature_names_path = data_path / 'feature_names.txt'
+    if feature_names_path.exists():
+        with open(feature_names_path, 'r') as f:
+            feature_names = [line.strip() for line in f if line.strip()]
+            metadata['feature_names'] = feature_names
+            print(f"\n📊 Loaded {len(feature_names)} feature names for benchmark analysis")
     
     print(f"\n🎯 Output Targets ({len(horizons_config)} horizons):")
     for i, h in enumerate(horizons_config, 1):
@@ -1777,10 +1788,87 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     checkpoint = torch.load(checkpoint_path, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     
+    # =========================================================================
+    # Validation Set Benchmark Comparison (Best Model)
+    # =========================================================================
+    print("\n" + "="*80)
+    print("   Validation Set Benchmarks (Best Model)")
+    print("="*80)
+    
+    # Re-evaluate on validation set with best model
+    model.eval()
+    val_preds = []
+    val_targets = []
+    val_inputs = []  # Collect inputs to extract historical returns
+    val_loss = 0.0
+    val_batches = 0
+    
+    with torch.no_grad():
+        for batch in dataloaders['val']:
+            batch_X, batch_y, batch_static = batch
+            batch_X = batch_X.to(device)
+            batch_y = batch_y.to(device)
+            batch_static = batch_static.to(device) if has_static_features else None
+            
+            predictions = model(batch_X, static_features=batch_static)
+            loss = criterion(predictions, batch_y)
+            
+            val_loss += loss.item()
+            val_batches += 1
+            val_preds.append(predictions)
+            val_targets.append(batch_y)
+            val_inputs.append(batch_X.cpu())  # Save inputs for historical returns
+    
+    val_preds = torch.cat(val_preds, dim=0)
+    val_targets = torch.cat(val_targets, dim=0)
+    val_inputs = torch.cat(val_inputs, dim=0)  # [batch, lookback, features]
+    val_metrics = compute_metrics(val_preds, val_targets, horizons=horizons_config)
+    
+    print(f"\n📊 Validation Set Results (Best Model):")
+    print(f"  Val Loss: {val_loss / val_batches:.6f}")
+    print(f"  Val MAE: {val_metrics['mae']:.6f}")
+    print(f"  Val RMSE: {val_metrics['rmse']:.6f}")
+    print(f"  Val Dir Acc: {val_metrics['dir_acc']:.2f}%")
+    
+    # Extract historical target returns for MA/EMA benchmarks
+    # Find target_basket_close feature index
+    target_feature_idx = None
+    if 'feature_names' in metadata:
+        feature_names = metadata['feature_names']
+        if 'target_basket_close' in feature_names:
+            target_feature_idx = feature_names.index('target_basket_close')
+    
+    val_historical_returns = None
+    if target_feature_idx is not None:
+        # Extract target_basket_close from input sequences: [batch, lookback, features]
+        target_prices = val_inputs[:, :, target_feature_idx].numpy()  # [batch, lookback]
+        
+        # Compute returns from prices (avoid division by zero)
+        val_historical_returns = np.zeros_like(target_prices)
+        val_historical_returns[:, 1:] = np.diff(target_prices, axis=1) / (target_prices[:, :-1] + 1e-8)
+        val_historical_returns[:, 0] = 0  # First return is undefined, set to 0
+    
+    # Compute validation benchmarks with historical returns
+    val_benchmark_results = benchmarks.compute_all_benchmarks(
+        targets=val_targets,
+        historical_returns=val_historical_returns,
+        horizons=horizons_config,
+        ma_windows=[5, 10, 21],
+        ema_alpha=0.3
+    )
+    
+    # Print validation benchmark comparison
+    benchmarks.print_benchmark_comparison(
+        model_metrics=val_metrics,
+        benchmark_metrics=val_benchmark_results,
+        model_name="TFT (Validation)"
+    )
+    
     # Evaluate on test set
     model.eval()
     test_preds = []
     test_targets = []
+    test_inputs = []  # Collect inputs to extract historical returns
     test_loss = 0.0
     test_batches = 0
     
@@ -1801,10 +1889,12 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
             
             test_preds.append(predictions)
             test_targets.append(batch_y)
+            test_inputs.append(batch_X.cpu())  # Save inputs for historical returns
     
     test_loss = test_loss / test_batches
     test_preds = torch.cat(test_preds, dim=0)
     test_targets = torch.cat(test_targets, dim=0)
+    test_inputs = torch.cat(test_inputs, dim=0)  # [batch, lookback, features]
     test_metrics = compute_metrics(test_preds, test_targets, horizons=horizons_config)
     
     print(f"\n📊 Test Set Results:")
@@ -1820,6 +1910,40 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
             horizon_strs.append(f"{key}={value:.6f}")
     if horizon_strs:
         print(f"  Per-Horizon MAE: {', '.join(horizon_strs)}")
+    
+    # =========================================================================
+    # Test Set Benchmark Comparison
+    # =========================================================================
+    print("\n" + "="*80)
+    print("   Test Set Benchmarks")
+    print("="*80)
+    
+    # Extract historical target returns for MA/EMA benchmarks
+    test_historical_returns = None
+    if target_feature_idx is not None:
+        # Extract target_basket_close from input sequences: [batch, lookback, features]
+        target_prices = test_inputs[:, :, target_feature_idx].numpy()  # [batch, lookback]
+        
+        # Compute returns from prices (avoid division by zero)
+        test_historical_returns = np.zeros_like(target_prices)
+        test_historical_returns[:, 1:] = np.diff(target_prices, axis=1) / (target_prices[:, :-1] + 1e-8)
+        test_historical_returns[:, 0] = 0  # First return is undefined, set to 0
+    
+    # Compute naïve forecast and other benchmarks with historical returns
+    test_benchmark_results = benchmarks.compute_all_benchmarks(
+        targets=test_targets,
+        historical_returns=test_historical_returns,
+        horizons=horizons_config,
+        ma_windows=[5, 10, 21],
+        ema_alpha=0.3
+    )
+    
+    # Print test benchmark comparison
+    benchmarks.print_benchmark_comparison(
+        model_metrics=test_metrics,
+        benchmark_metrics=test_benchmark_results,
+        model_name="TFT (Test)"
+    )
     
     # Log hyperparameters to TensorBoard HParams
     hparams = {

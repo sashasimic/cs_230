@@ -70,8 +70,10 @@ def submit_hyperparameter_tuning_job(
     )
     
     print(f"\n{'='*80}")
-    if phase == 2:
-        print(f"   Phase 2: Regularization Tuning (FinCast Prep)")
+    if phase == 3:
+        print(f"   Phase 3: Final Learning Rate + Weight Decay Refinement")
+    elif phase == 2:
+        print(f"   Phase 2: Fine-tuning Regularization + Learning Rate")
     elif phase == '1a':
         print(f"   Phase 1a: Component Ablation Study")
     else:
@@ -88,15 +90,26 @@ def submit_hyperparameter_tuning_job(
     else:
         print(f"Dataset: Each trial will generate from BigQuery")
     
-    if phase == 2:
+    if phase == 3:
+        print(f"\n🔒 LOCKED (Phase 2 Winners):")
+        print(f"   - hidden_size: 128")
+        print(f"   - lstm_layers: 2")
+        print(f"   - attention_layers: 2")
+        print(f"   - attention_heads: 8")
+        print(f"   - batch_size: 64")
+        print(f"   - dropout: 0.45 (locked from Phase 2)")
+        print(f"\n🎯 TUNING (Phase 3):")
+        print(f"   - learning_rate: [5e-5 to 5e-4] (log scale, wider range)")
+        print(f"   - weight_decay: [0.01, 0.02, 0.03] (no zero)")
+    elif phase == 2:
         print(f"\n🔒 LOCKED (Phase 1 Winners):")
         print(f"   - hidden_size: 128")
         print(f"   - lstm_layers: 2")
         print(f"   - attention_layers: 2")
         print(f"   - attention_heads: 8")
         print(f"   - batch_size: 64")
-        print(f"   - learning_rate: 5e-5")
         print(f"\n🎯 TUNING (Phase 2):")
+        print(f"   - learning_rate: [1e-5 to 2e-4] (log scale)")
         print(f"   - dropout: [0.35, 0.40, 0.45, 0.50]")
         print(f"   - weight_decay: [0.0, 0.01, 0.02, 0.03]")
     elif phase == '1a':
@@ -117,18 +130,44 @@ def submit_hyperparameter_tuning_job(
     print(f"{'='*80}\n")
     
     # Define hyperparameter search space based on phase
-    if phase == 2:
-        # Phase 2: Lock architecture, tune regularization
+    if phase == 3:
+        # Phase 3: Lock dropout, refine learning rate + weight decay
+        hyperparameter_specs = {
+            # LOCKED (Phase 2 winners)
+            'hidden_size': hpt.DiscreteParameterSpec(values=[128], scale='linear'),
+            'lstm_layers': hpt.DiscreteParameterSpec(values=[2], scale='linear'),
+            'attention_layers': hpt.DiscreteParameterSpec(values=[2], scale='linear'),
+            'attention_heads': hpt.DiscreteParameterSpec(values=[8], scale='linear'),
+            'batch_size': hpt.DiscreteParameterSpec(values=[64], scale='linear'),
+            'dropout': hpt.DiscreteParameterSpec(values=[0.45], scale='linear'),  # Locked from Phase 2
+            
+            # TUNING (Phase 3 focus)
+            'learning_rate': hpt.DoubleParameterSpec(
+                min=5e-5,   # 0.00005 (higher lower bound)
+                max=5e-4,   # 0.0005 (higher upper bound, wider range)
+                scale='log'       # Log scale for learning rate
+            ),
+            'weight_decay': hpt.DiscreteParameterSpec(
+                values=[0.01, 0.02, 0.03],  # No zero - only L2 regularization
+                scale='linear'
+            ),
+        }
+    elif phase == 2:
+        # Phase 2: Lock architecture, tune regularization + learning rate
         hyperparameter_specs = {
             # LOCKED (Phase 1 winners)
             'hidden_size': hpt.DiscreteParameterSpec(values=[128], scale='linear'),
             'lstm_layers': hpt.DiscreteParameterSpec(values=[2], scale='linear'),
             'attention_layers': hpt.DiscreteParameterSpec(values=[2], scale='linear'),
             'attention_heads': hpt.DiscreteParameterSpec(values=[8], scale='linear'),
-            'learning_rate': hpt.DiscreteParameterSpec(values=[0.00005], scale='linear'),
             'batch_size': hpt.DiscreteParameterSpec(values=[64], scale='linear'),
             
             # TUNING (Phase 2 focus)
+            'learning_rate': hpt.DoubleParameterSpec(
+                min=1e-5,   # 0.00001 (lower bound)
+                max=2e-4,   # 0.0002 (upper bound)
+                scale='log'       # Log scale for learning rate
+            ),
             'dropout': hpt.DiscreteParameterSpec(
                 values=[0.35, 0.40, 0.45, 0.50],  # Tune around Phase 1 value
                 scale='linear'
@@ -238,11 +277,20 @@ def submit_hyperparameter_tuning_job(
     
     # Create labels for easy identification in Experiments UI
     # Labels must be lowercase, alphanumeric, hyphens, underscores
+    
+    # Map phase to descriptive label
+    phase_labels = {
+        1: 'architecture',
+        '1a': 'component-ablation',
+        2: 'regularization',
+        3: 'lr-wd-refinement'
+    }
+    
     labels = {
         'model_type': model_type.lower().replace('_', '-'),
         'job_name': job_name.lower().replace('_', '-'),
         'job_type': f'hp-phase{phase}',
-        'phase': 'regularization' if phase == 2 else 'architecture',
+        'phase': phase_labels.get(phase, 'unknown'),
     }
     if dataset_version:
         labels['dataset_version'] = dataset_version.lower().replace('/', '-').replace('_', '-')
@@ -304,7 +352,17 @@ def submit_hyperparameter_tuning_job(
         print(f"   ⚠️  Could not read FinCast status from config: {e}")
     
     # Add phase-specific labels
-    if phase == 2:
+    if phase == 3:
+        # Phase 3: Final LR + WD refinement
+        labels['hidden_size'] = '128'
+        labels['lstm_layers'] = '2'
+        labels['attention_layers'] = '2'
+        labels['attention_heads'] = '8'
+        labels['batch_size'] = '64'
+        labels['dropout'] = '0-45'  # Locked from Phase 2
+        labels['tuning'] = 'lr-weight_decay'
+        labels['lr_range'] = '5e-05_to_5e-04'  # Wider range
+    elif phase == 2:
         # Phase 2: Add locked architecture params for easy filtering
         labels['hidden_size'] = '128'
         labels['lstm_layers'] = '2'
@@ -426,20 +484,20 @@ if __name__ == '__main__':
                        help='Model type (e.g., tft, lstm, transformer). Default: tft')
     parser.add_argument('--job-name', type=str, default=None,
                        help='Job name (auto-generated if not provided)')
-    parser.add_argument('--phase', type=str, default='1', choices=['1', '1a', '2'],
-                       help='HP tuning phase: 1=architecture search, 1a=component ablation, 2=regularization tuning (default: 1)')
+    parser.add_argument('--phase', type=str, default='1', choices=['1', '1a', '2', '3'],
+                       help='HP tuning phase: 1=architecture, 1a=component ablation, 2=regularization, 3=lr+wd refinement (default: 1)')
     parser.add_argument('--max-trials', type=int, default=None,
-                       help='Max trials (default: 20 for phase 1/1a, 16 for phase 2)')
+                       help='Max trials (default: 20 for phase 1/1a, 16 for phase 2/3)')
     parser.add_argument('--parallel-trials', type=int, default=None,
-                       help='Parallel trials (default: 3 for phase 1/1a, 4 for phase 2)')
+                       help='Parallel trials (default: 3 for phase 1/1a, 4 for phase 2/3)')
     args = parser.parse_args()
     
     # Convert phase to appropriate type for backward compatibility
-    phase = int(args.phase) if args.phase in ['1', '2'] else args.phase
+    phase = int(args.phase) if args.phase in ['1', '2', '3'] else args.phase
     
     # Set defaults based on phase
-    max_trials = args.max_trials or (16 if phase == 2 else 20)
-    parallel_trials = args.parallel_trials or (4 if phase == 2 else 3)
+    max_trials = args.max_trials or (16 if phase in [2, 3] else 20)
+    parallel_trials = args.parallel_trials or (4 if phase in [2, 3] else 3)
     
     # CPU-only (slower but cheaper)
     submit_hyperparameter_tuning_job(

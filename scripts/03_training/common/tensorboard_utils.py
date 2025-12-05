@@ -163,13 +163,24 @@ def log_model_info(
         
         # Build architecture details section
         arch_details = []
-        common_keys = ['hidden_dim', 'd_model', 'num_layers', 'n_layers', 'num_heads', 'n_heads', 
-                      'feedforward_dim', 'd_ff', 'dropout', 'num_lstm_layers', 'num_attention_heads']
         
-        for key in common_keys:
+        # TFT-specific keys and other model keys
+        param_keys = [
+            'hidden_size', 'hidden_dim', 'd_model',
+            'lstm_layers', 'num_lstm_layers',
+            'attention_layers', 'num_attention_layers',
+            'attention_heads', 'num_attention_heads', 'num_heads', 'n_heads',
+            'feedforward_dim', 'd_ff',
+            'dropout',
+            'num_layers', 'n_layers',
+            'use_lstm', 'use_variable_selection', 'use_static_enrichment', 'use_position_wise_grn'
+        ]
+        
+        for key in param_keys:
             if key in model_cfg:
                 # Convert key to display name
-                display_name = key.replace('_', ' ').title().replace('D Model', 'Hidden Dimension')
+                display_name = key.replace('_', ' ').title()
+                display_name = display_name.replace('D Model', 'Hidden Dimension')
                 display_name = display_name.replace('D Ff', 'Feedforward Dimension')
                 display_name = display_name.replace('N Layers', 'Num Layers')
                 display_name = display_name.replace('N Heads', 'Num Heads')
