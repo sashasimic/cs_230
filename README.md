@@ -37,7 +37,7 @@
 
 | Model | Repository | Description |
 |-------|------------|-------------|
-| **PAN-NAN** | [feiyangk/230proj](https://github.com/feiyangk/230proj) | PAN-NAN architecture (separate team implementation) |
+| **PAN-NAN** | [feiyangk/230proj](https://github.com/feiyangk/230proj) | PAN-NAN architecture (separate team member's implementation) |
 
 **Quick Navigation:**
 ```bash
@@ -141,8 +141,6 @@ inflation_predictor/
 ├── logs/                        # Training logs and metrics
 ├── checkpoints/                 # Training checkpoints
 ├── notebooks/                   # Jupyter notebooks
-├── temp/                        # Temporary files (gitignored)
-├── .env                         # Environment variables (gitignored)
 ├── .env.example                 # Example environment file
 ├── .gitignore                   # Git ignore rules
 ├── .dockerignore                # Docker ignore rules
@@ -636,32 +634,31 @@ Epoch 3/200 (2.2min) - Train: 0.0176, Val: 0.0189, MAE: 0.0095, Dir Acc: 56.8%
 
 ## 🐛 Troubleshooting
 
-### TensorFlow Installation Issues (macOS)
+### NumPy Version Compatibility
 
-**Problem:** TensorFlow hangs or "Illegal instruction" error
+**Problem:** `ModuleNotFoundError: No module named 'numpy._core'`
 
 **Solution:**
 ```bash
-pip uninstall tensorflow -y
-pip install tensorflow-macos==2.13.0 tensorflow-metal==1.0.0
-```
+# Regenerate data with current numpy version
+python scripts/03_training/tft/tft_train_local.py --reload
 
+# Or upgrade numpy
+pip install --upgrade numpy
+```
 
 ### Data Not Found Error
 
-**Problem:** `FileNotFoundError: data/raw/train.csv`
+**Problem:** `FileNotFoundError: data/processed/X_train.npy`
 
 **Solution:**
 ```bash
-# Either generate data:
-python train.py --generate-dummy
+# Generate data from BigQuery
+python scripts/02_features/tft_pipeline.py
 
-# Or update config.yaml to point to correct path:
-data:
-  local:
-    train_path: 'data/dummy/train.csv'
+# Or use versioned dataset
+python scripts/05_deployment/generate_dataset.py --version v1 --model-type tft
 ```
-
 
 ### Out of Memory
 
@@ -669,43 +666,31 @@ data:
 
 **Solution:**
 ```bash
-# Reduce batch size
-python train.py --batch-size 16
+# Reduce batch size in config
+# Edit configs/model_tft_config.yaml:
+training:
+  batch_size: 16  # Reduce from 32
 
-# Or reduce model size in config.yaml:
+# Or reduce model size:
 model:
-  hidden_dim: 64  # Instead of 128
-  num_layers: 1   # Instead of 2
+  hidden_size: 64  # Reduce from 128
 ```
 
----
+### GCP Authentication Issues
 
-## ✨ Project Features
+**Problem:** BigQuery or GCS access denied
 
-### ✅ Completed Features
+**Solution:**
+```bash
+# Authenticate with Google Cloud
+gcloud auth application-default login
 
-- [x] Modular project structure with shared utilities
-- [x] TFT architecture with LSTM, attention, VSN, and GRU decoder
-- [x] Model-agnostic data pipeline (BigQuery integration)
-- [x] Ticker grouping and data augmentation
-- [x] FinCast price encoder integration (optional)
-- [x] Configurable training (YAML + CLI)
-- [x] Early stopping & checkpointing
-- [x] TensorBoard integration with clean console output
-- [x] GCP Vertex AI deployment with Docker
-- [x] Versioned datasets with GCS sync
-- [x] Reproducible experiments (seeding)
+# Set project
+gcloud config set project YOUR_PROJECT_ID
 
-### 🚧 Future Enhancements
-
-- [ ] Hyperparameter tuning (Optuna/Keras Tuner)
-- [ ] Model ensembling
-- [ ] Real-time prediction API
-- [ ] MLflow experiment tracking
-- [ ] Automated testing suite
-- [ ] Data augmentation strategies
-- [ ] Multi-step forecasting
-- [ ] Attention visualization
+# Verify credentials
+gcloud auth list
+```
 
 ---
 
