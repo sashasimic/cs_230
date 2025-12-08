@@ -19,14 +19,10 @@ if sys.platform == 'darwin':  # Mac OS
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
 import numpy as np
 from pathlib import Path
 from typing import Dict, Optional
 from datetime import datetime
-
-# Import benchmark utilities
-from utils import benchmarks
 
 # Set PyTorch to single-threaded mode on Mac
 if sys.platform == 'darwin':
@@ -36,157 +32,43 @@ if sys.platform == 'darwin':
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-# Import TensorBoard utilities
+# Import common utilities
 common_path = Path(__file__).parent.parent / 'common'
 if str(common_path) not in sys.path:
     sys.path.insert(0, str(common_path))
 
+# Import all common modules
 try:
     import tensorboard_utils as tb_utils
-    print(f"\n✅ TensorBoard utilities loaded from: {tb_utils.__file__}")
+    from nn_modules import PositionalEncoding, GatedResidualNetwork, generate_causal_mask
+    from training_utils import (
+        compute_grad_norm,
+        compute_layer_grad_stats,
+        train_epoch,
+        create_optimizer,
+        create_scheduler
+    )
+    from metrics import compute_metrics
+    from visualization import (
+        print_attention_console,
+        log_attention_heatmap,
+        print_attention_statistics,
+        analyze_temporal_focus
+    )
+    print(f"\n✅ Common utilities loaded from: {common_path}")
 except ImportError as e:
-    print(f"\n⚠️  CRITICAL: Failed to import TensorBoard utilities: {e}")
+    print(f"\n⚠️  CRITICAL: Failed to import common utilities: {e}")
     print(f"   Looked in: {common_path}")
     raise
 
-
-class PositionalEncoding(nn.Module):
-    """Sinusoidal positional encoding for transformer.
-    
-    Adds positional information to input embeddings to help the model
-    understand temporal ordering. Uses sine and cosine functions of
-    different frequencies (matching decoder implementation).
-    """
-    
-    def __init__(self, d_model: int, max_len: int = 5000):
-        super().__init__()
-        
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model)
-        )
-        
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)  # [1, max_len, d_model]
-        
-        self.register_buffer("pe", pe)
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Add positional encoding to input.
-        
-        Args:
-            x: [batch, seq_len, d_model]
-        Returns:
-            x with positional encoding added
-        """
-        return x + self.pe[:, :x.size(1), :]
+# Import benchmark utilities
+from utils import benchmarks
 
 
-class GatedResidualNetwork(nn.Module):
-    """Gated Residual Network (GRN) - core TFT building block.
-    
-    Applies non-linear processing with gating and residual connections.
-    """
-    
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, dropout: float = 0.0, context_dim: int = None):
-        super().__init__()
-        self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.context_dim = context_dim
-        self.hidden_dim = hidden_dim
-        
-        # Primary path
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.elu = nn.ELU()
-        
-        # Context path (optional)
-        if context_dim is not None:
-            self.context_fc = nn.Linear(context_dim, hidden_dim, bias=False)
-        
-        # Output path with gating
-        self.fc2 = nn.Linear(hidden_dim, output_dim)
-        self.dropout = nn.Dropout(dropout)
-        self.gate = nn.Linear(hidden_dim, output_dim)
-        self.sigmoid = nn.Sigmoid()
-        
-        # Residual connection (if dimensions match)
-        if input_dim != output_dim:
-            self.skip = nn.Linear(input_dim, output_dim)
-        else:
-            self.skip = None
-        
-        # Layer norm
-        self.layer_norm = nn.LayerNorm(output_dim)
-        
-        # Initialize weights properly (CRITICAL for gradient stability)
-        self._init_weights()
-    
-    def _init_weights(self):
-        """Initialize GRN weights with scaled initialization."""
-        # Scale all linear layers to prevent gradient explosion
-        for module in [self.fc1, self.fc2, self.gate]:
-            if hasattr(module, 'weight'):
-                # Use smaller gain for GRN internal layers
-                nn.init.xavier_uniform_(module.weight, gain=0.5)
-                if hasattr(module, 'bias') and module.bias is not None:
-                    nn.init.zeros_(module.bias)
-        
-        # Skip connection and context projection
-        if self.skip is not None:
-            nn.init.xavier_uniform_(self.skip.weight, gain=1.0)
-            if self.skip.bias is not None:
-                nn.init.zeros_(self.skip.bias)
-        
-        if self.context_dim is not None:
-            nn.init.xavier_uniform_(self.context_fc.weight, gain=0.5)
-    
-    def forward(self, x: torch.Tensor, context: torch.Tensor = None):
-        """Forward pass with optional context.
-        
-        Args:
-            x: [batch, ..., input_dim]
-            context: [batch, ..., context_dim] (optional)
-        """
-        # Skip connection
-        if self.skip is not None:
-            residual = self.skip(x)
-        else:
-            residual = x
-        
-        # Primary path
-        hidden = self.elu(self.fc1(x))
-        
-        # Add context if provided (dimension-agnostic)
-        if context is not None and self.context_dim is not None:
-            context_proj = self.context_fc(context)  # [batch, context_dim] -> [batch, hidden_dim]
-            
-            # Handle different dimension combinations
-            if hidden.dim() == context_proj.dim():
-                # Both same dims: direct addition (e.g., both [batch, hidden_dim])
-                hidden = hidden + context_proj
-            elif hidden.dim() == context_proj.dim() + 1:
-                # hidden has extra time dimension: [batch, time, hidden_dim] vs [batch, hidden_dim]
-                # Broadcast context across time: [batch, 1, hidden_dim] -> [batch, time, hidden_dim]
-                hidden = hidden + context_proj.unsqueeze(1)
-            else:
-                raise ValueError(
-                    f"Unsupported shape combination: hidden {hidden.shape}, context {context_proj.shape}"
-                )
-        
-        # Gated output
-        gate = self.sigmoid(self.gate(hidden))
-        output = self.fc2(self.dropout(hidden))
-        output = gate * output
-        
-        # Add residual and normalize
-        output = self.layer_norm(output + residual)
-        
-        return output
-
-
-# TickerGroupAggregator removed - grouping now done at data generation time
+# ==============================================================================
+# TFT-SPECIFIC MODULES
+# Common modules (PositionalEncoding, GatedResidualNetwork) are imported above
+# ==============================================================================
 
 class VariableSelectionNetwork(nn.Module):
     """Variable Selection Network (VSN) - learns which features are important."""
@@ -313,15 +195,9 @@ class TemporalFusionTransformer(nn.Module):
         # In production, you'd separate known vs unknown based on config
         self.num_time_varying = self.num_features
         
-        print(f"   Initializing TFT with:")
-        print(f"   - {self.num_features} input features")
-        print(f"   - {self.num_horizons} prediction horizons")
-        print(f"   - {self.num_quantiles} quantiles: {self.quantiles}")
-        
         # ===== 1. Variable Selection Setup =====
         # Features are already grouped at data generation time
         # We now have ~45-60 compact group-level features instead of 99 raw ticker features
-        print(f"\n✅ Using pre-aggregated group features: {self.num_features} features")
         
         # Each feature is already a scalar group-level signal
         vsn_input_dim = 1  # Each feature is scalar
@@ -338,18 +214,15 @@ class TemporalFusionTransformer(nn.Module):
                 dropout=self.dropout
             )
             self.vsn_norm = nn.LayerNorm(self.hidden_size)  # Normalize VSN output
-            print(f"   ✅ Variable Selection Network (VSN) ENABLED")
         else:
             # Simple linear projection instead of VSN (NO NORM - match decoder!)
             self.feature_projection = nn.Linear(self.num_features, self.hidden_size)
-            print(f"   ✗ Variable Selection Network (VSN) DISABLED (using linear projection)")
         
         # ===== Positional Encoding & Dropout (Match Decoder) =====
         # Get lookback window from config
         lookback = config['data'].get('lookback_window', config['data'].get('lookback', 192))
         self.pos_encoder = PositionalEncoding(self.hidden_size, max_len=lookback)
         self.dropout_layer = nn.Dropout(self.dropout)
-        print(f"   ✅ Added positional encoding (max_len={lookback}) and dropout ({self.dropout})")
         
         # ===== 2. LSTM Encoder (Optional) =====
         # Processes historical sequence
@@ -362,9 +235,6 @@ class TemporalFusionTransformer(nn.Module):
                 dropout=self.dropout if self.lstm_layers > 1 else 0
             )
             self.lstm_norm = nn.LayerNorm(self.hidden_size)  # Normalize LSTM output
-            print(f"   ✅ LSTM Encoder ENABLED ({self.lstm_layers} layer{'s' if self.lstm_layers > 1 else ''}, unidirectional)")
-        else:
-            print(f"   ✗ LSTM Encoder DISABLED (using direct projection)")
         
         # ===== 3. Static Enrichment (using GRN) =====
         # Embeddings for static categorical features
@@ -395,9 +265,6 @@ class TemporalFusionTransformer(nn.Module):
             nn.init.normal_(self.category_embedding.weight, mean=0.0, std=0.01)
             
             static_context_dim = embedding_dim * 2  # Concatenate both embeddings
-            print(f"   - Static features: {len(static_features)}")
-            print(f"     Ticker embedding: {ticker_cardinality} tickers -> {embedding_dim}")
-            print(f"     Group embedding: {group_cardinality} groups ({augment_groups}) -> {embedding_dim}")
         else:
             static_context_dim = None
         
@@ -412,9 +279,6 @@ class TemporalFusionTransformer(nn.Module):
                 context_dim=static_context_dim
             )
             self.enrichment_norm = nn.LayerNorm(self.hidden_size)
-            print(f"   ✅ Static enrichment GRN ENABLED")
-        else:
-            print(f"   ✗ Static enrichment GRN DISABLED (better gradient flow)")
         
         # ===== 4. Transformer Encoder (Match Decoder Exactly) =====
         # Use PyTorch's built-in TransformerEncoder for guaranteed correctness
@@ -440,14 +304,11 @@ class TemporalFusionTransformer(nn.Module):
         lookback = config['data'].get('lookback_window', config['data'].get('lookback', 192))
         self.register_buffer(
             'causal_mask',
-            self._generate_causal_mask(lookback)
+            generate_causal_mask(lookback)
         )
         
         # Final norm on encoder output (matching decoder)
         self.enc_norm = nn.LayerNorm(self.hidden_size)
-        
-        print(f"   ✅ Using TransformerEncoder ({self.attention_layers} layers, pre-norm, matching decoder)")
-        print(f"   ✅ Feedforward dim={dim_feedforward}, GELU activation, dropout={self.dropout}")
         
         # ===== 5. Position-wise Feed-Forward =====
         # Optional GRN (can block gradients)
@@ -459,9 +320,6 @@ class TemporalFusionTransformer(nn.Module):
                 output_dim=self.hidden_size,
                 dropout=self.dropout
             )
-            print(f"   ✅ Position-wise GRN ENABLED")
-        else:
-            print(f"   ✗ Position-wise GRN DISABLED (better gradient flow)")
         
         # ===== 6. Future Decoder (Match Decoder Transformer) =====
         # GRU-based autoregressive decoder over horizons (instead of independent heads)
@@ -483,23 +341,8 @@ class TemporalFusionTransformer(nn.Module):
         # Learned start token (input at first horizon step)
         self.start_token = nn.Parameter(torch.zeros(1, self.future_input_dim))
         
-        print(f"   ✅ Added GRU future decoder (matching decoder transformer)")
-        
         # Initialize weights
         self._init_weights()
-    
-    def _generate_causal_mask(self, size: int) -> torch.Tensor:
-        """Generate causal mask to prevent attention to future positions.
-        
-        Returns:
-            mask: [size, size] with 0 for allowed, -inf for masked
-            [[  0, -inf, -inf],
-             [  0,   0, -inf],
-             [  0,   0,   0]]
-        """
-        mask = torch.triu(torch.ones(size, size), diagonal=1)
-        mask = mask.masked_fill(mask == 1, float('-inf'))
-        return mask
     
     def forward(self, x: torch.Tensor, static_features: torch.Tensor = None, y_future: torch.Tensor = None, teacher_forcing: bool = True, return_attention: bool = False):
         """
@@ -690,298 +533,10 @@ class TemporalFusionTransformer(nn.Module):
                 nn.init.zeros_(param)
 
 
-def compute_grad_norm(model: nn.Module) -> float:
-    """Compute total gradient norm across all model parameters."""
-    total_norm = 0.0
-    for p in model.parameters():
-        if p.grad is not None:
-            param_norm = p.grad.data.norm(2)
-            total_norm += param_norm.item() ** 2
-    total_norm = total_norm ** 0.5
-    return total_norm
-
-
-def compute_layer_grad_stats(model: nn.Module) -> dict:
-    """Compute gradient statistics per layer."""
-    layer_stats = {}
-    
-    for name, param in model.named_parameters():
-        if param.grad is not None:
-            grad_norm = param.grad.data.norm(2).item()
-            grad_mean = param.grad.data.mean().item()
-            grad_std = param.grad.data.std().item() if param.grad.data.numel() > 1 else 0.0
-            grad_max = param.grad.data.abs().max().item()
-            
-            # Group by layer type (match decoder's per-layer breakdown)
-            if 'variable_selection' in name or 'variable_grns' in name:
-                layer_type = 'VSN'
-            elif 'feature_projection' in name and 'weight' in name:
-                layer_type = 'Input'
-            elif 'static_enrichment' in name or 'position_wise_grn' in name:
-                layer_type = 'GRN'
-            elif 'lstm_encoder' in name:
-                if 'weight_ih_l0' in name or 'weight_hh_l0' in name or 'bias_ih_l0' in name or 'bias_hh_l0' in name:
-                    layer_type = 'LSTM_L0'
-                elif 'weight_ih_l1' in name or 'weight_hh_l1' in name or 'bias_ih_l1' in name or 'bias_hh_l1' in name:
-                    layer_type = 'LSTM_L1'
-                elif 'weight_ih_l2' in name or 'weight_hh_l2' in name or 'bias_ih_l2' in name or 'bias_hh_l2' in name:
-                    layer_type = 'LSTM_L2'
-                else:
-                    layer_type = 'LSTM_Other'
-            elif 'transformer_encoder.layers' in name:
-                # TransformerEncoder layers (matching decoder)
-                parts = name.split('.')
-                layer_idx = parts[2] if len(parts) > 2 else '?'
-                # Break out attention vs feedforward within each encoder layer
-                if 'self_attn' in name:
-                    layer_type = f'Attention_L{layer_idx}'
-                elif 'linear1' in name or 'linear2' in name:
-                    layer_type = f'Feedforward_L{layer_idx}'
-                elif 'norm1' in name or 'norm2' in name:
-                    # Norms contribute to the attention/ff layers they're part of
-                    if 'norm1' in name:
-                        layer_type = f'Attention_L{layer_idx}'
-                    else:
-                        layer_type = f'Feedforward_L{layer_idx}'
-                else:
-                    layer_type = f'Encoder_L{layer_idx}_Other'
-            elif 'enc_norm' in name:
-                layer_type = 'EncoderNorm'
-            elif 'future_decoder' in name or 'future_in_proj' in name or 'future_out_proj' in name or 'start_token' in name:
-                # Future decoder (GRU-based autoregressive decoder)
-                layer_type = 'FutureDecoder'
-            elif 'quantile_outputs' in name:
-                layer_type = 'Output'
-            elif 'pos_encoder' in name:
-                layer_type = 'PosEnc'
-            else:
-                layer_type = 'Other'
-            
-            if layer_type not in layer_stats:
-                layer_stats[layer_type] = {'norm': 0.0, 'max': 0.0, 'std': 0.0}
-            
-            # Aggregate like decoder does: sum norms, max for max/std
-            layer_stats[layer_type]['norm'] += grad_norm
-            layer_stats[layer_type]['max'] = max(layer_stats[layer_type]['max'], grad_max)
-            layer_stats[layer_type]['std'] = max(layer_stats[layer_type]['std'], grad_std)
-    
-    return layer_stats
-
-
-def compute_metrics(predictions: torch.Tensor, targets: torch.Tensor, horizons: list = None) -> Dict[str, float]:
-    """
-    Compute evaluation metrics.
-    
-    Args:
-        predictions: [batch, horizons]
-        targets: [batch, horizons]
-        horizons: Optional list of actual horizon values for labeling
-    
-    Returns:
-        Dictionary of metrics (includes per-horizon metrics if horizons provided)
-    """
-    with torch.no_grad():
-        # Overall MAE
-        mae = torch.abs(predictions - targets).mean().item()
-        
-        # Overall MSE
-        mse = ((predictions - targets) ** 2).mean().item()
-        
-        # Directional accuracy
-        pred_direction = torch.sign(predictions)
-        target_direction = torch.sign(targets)
-        dir_acc = (pred_direction == target_direction).float().mean().item() * 100
-        
-        metrics = {
-            'mae': mae,
-            'mse': mse,
-            'rmse': np.sqrt(mse),
-            'dir_acc': dir_acc
-        }
-        
-        # Compute per-horizon metrics
-        num_horizons = predictions.shape[1]
-        for h_idx in range(num_horizons):
-            h_mae = torch.abs(predictions[:, h_idx] - targets[:, h_idx]).mean().item()
-            h_rmse = torch.sqrt(((predictions[:, h_idx] - targets[:, h_idx]) ** 2).mean()).item()
-            
-            # Use actual horizon values for labeling
-            horizon_label = f"H{horizons[h_idx]}" if (horizons and h_idx < len(horizons)) else f"H{h_idx+1}"
-            
-            metrics[f"{horizon_label}_MAE"] = h_mae
-            metrics[f"{horizon_label}_RMSE"] = h_rmse
-        
-        return metrics
-
-
-def print_attention_console(attention_weights, max_display=36, sample_mode='sample'):
-    """Print attention patterns as ASCII art in console.
-    
-    Args:
-        attention_weights: [batch, num_heads, seq_len, seq_len]
-        max_display: Maximum sequence length to display (for readability)
-        sample_mode: 'full' for first N steps, 'sample' for beginning/middle/end
-    """
-    if attention_weights is None:
-        return
-    
-    # Get first sample, average across heads
-    batch_size, num_heads, seq_len, _ = attention_weights.shape
-    attn_avg = attention_weights[0, :, :, :].mean(dim=0)  # [seq, seq]
-    attn_avg = attn_avg.detach().cpu().numpy()
-    
-    if sample_mode == 'sample' and seq_len > max_display:
-        # Show beginning, middle, end
-        chunk_size = max_display // 3
-        indices = list(range(chunk_size)) + \
-                  list(range(seq_len//2 - chunk_size//2, seq_len//2 + chunk_size//2)) + \
-                  list(range(seq_len - chunk_size, seq_len))
-        attn_display = attn_avg[indices][:, indices]
-        display_indices = indices
-    else:
-        # Show first N timesteps
-        display_len = min(seq_len, max_display)
-        attn_display = attn_avg[:display_len, :display_len]
-        display_indices = list(range(display_len))
-    
-    # Define ASCII characters for different attention levels
-    chars = [' ', '·', '░', '▒', '▓', '█']
-    
-    display_len = len(display_indices)
-    if sample_mode == 'sample' and seq_len > max_display:
-        print(f"\n  📊 Attention Pattern (Sampled from {seq_len} timesteps: start/mid/end, Avg {num_heads} heads):")
-    else:
-        print(f"\n  📊 Attention Pattern (First {display_len}/{seq_len} timesteps, Avg {num_heads} heads):")
-    
-    print(f"     Query → | " + ''.join([f"{display_indices[i]%10}" for i in range(display_len)]))
-    print(f"     --------+-" + '-' * display_len)
-    
-    for i in range(display_len):
-        # Convert attention values to ASCII characters
-        row = attn_display[i]
-        ascii_row = ''
-        for val in row:
-            # Map [0, 1] to character index
-            char_idx = min(int(val * len(chars)), len(chars) - 1)
-            ascii_row += chars[char_idx]
-        
-        t_idx = display_indices[i]
-        print(f"     t={t_idx:3d} Key | {ascii_row}")
-    
-    # Show statistics (use full sequence, not just displayed portion)
-    recent_attn = attn_avg[:, -3:].mean()  # Last 3 timesteps (full sequence)
-    distant_attn = attn_avg[:, :3].mean()  # First 3 timesteps (full sequence)
-    mid_attn = attn_avg[:, seq_len//2-1:seq_len//2+2].mean()  # Middle 3 timesteps
-    print(f"\n  💡 Avg attention to recent past (last 3 of {seq_len}): {recent_attn:.3f}")
-    print(f"  💡 Avg attention to middle ({seq_len//2-1}-{seq_len//2+1}): {mid_attn:.3f}")
-    print(f"  💡 Avg attention to distant past (first 3): {distant_attn:.3f}")
-
-
-def log_attention_heatmap(writer, attention_weights, epoch, max_samples=4, max_timesteps=64):
-    """Log attention heatmap to TensorBoard.
-    
-    Args:
-        writer: TensorBoard SummaryWriter
-        attention_weights: [batch, num_heads, seq_len, seq_len]
-        epoch: Current epoch number
-        max_samples: Max number of samples to visualize
-        max_timesteps: Max sequence length to show (for readability)
-    """
-    if writer is None or attention_weights is None:
-        return
-    
-    import matplotlib.pyplot as plt
-    import matplotlib
-    matplotlib.use('Agg')  # Non-interactive backend
-    
-    # Get first sample, average across heads
-    batch_size, num_heads, seq_len, _ = attention_weights.shape
-    num_samples = min(batch_size, max_samples)
-    seq_len = min(seq_len, max_timesteps)
-    
-    # Average across attention heads
-    attn_avg = attention_weights[:num_samples, :, :seq_len, :seq_len].mean(dim=1)  # [samples, seq, seq]
-    attn_avg = attn_avg.detach().cpu().numpy()
-    
-    # Create heatmap for each sample
-    for sample_idx in range(num_samples):
-        fig, ax = plt.subplots(figsize=(10, 8))
-        im = ax.imshow(attn_avg[sample_idx], cmap='viridis', aspect='auto')
-        ax.set_xlabel('Key Position')
-        ax.set_ylabel('Query Position')
-        ax.set_title(f'Attention Heatmap (Sample {sample_idx+1}, Avg across {num_heads} heads)')
-        plt.colorbar(im, ax=ax)
-        
-        # Log to TensorBoard
-        writer.add_figure(f'attention/sample_{sample_idx}', fig, epoch)
-        plt.close(fig)
-
-
-def train_epoch(model: nn.Module, dataloader, criterion, optimizer, device, epoch: int = 0, clip_norm: float = 1.0, has_static_features: bool = False) -> dict:
-    """Train for one epoch and return detailed metrics (matches decoder transformer)."""
-    model.train()
-    total_loss = 0.0
-    unclipped_grad_norms = []
-    clipped_grad_norms = []
-    layer_grad_stats = None
-    
-    total_batches = len(dataloader)
-    print(f"\n  Training: 0/{total_batches} batches", end='', flush=True)
-    
-    for batch_idx, batch in enumerate(dataloader):
-        # Always 3 items: (X, y, static) - static may be empty placeholder
-        batch_X, batch_y, batch_static = batch
-        batch_X = batch_X.to(device)
-        batch_y = batch_y.to(device)
-        batch_static = batch_static.to(device) if has_static_features else None
-        
-        optimizer.zero_grad()
-        predictions = model(batch_X, static_features=batch_static, y_future=batch_y, teacher_forcing=True)
-        loss = criterion(predictions, batch_y)
-        loss.backward()
-        
-        # Compute unclipped gradient norm
-        unclipped_norm = compute_grad_norm(model)
-        unclipped_grad_norms.append(unclipped_norm)
-        
-        # Apply gradient clipping
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
-        
-        # Compute clipped gradient norm
-        clipped_norm = compute_grad_norm(model)
-        clipped_grad_norms.append(clipped_norm)
-        
-        # Get detailed layer stats for first batch only (after clipping)
-        if batch_idx == 0:
-            layer_grad_stats = compute_layer_grad_stats(model)
-        
-        optimizer.step()
-        total_loss += loss.item()
-        
-        # Progress update every 10 batches or at end
-        if (batch_idx + 1) % 10 == 0 or (batch_idx + 1) == total_batches:
-            print(f"\r  Training: {batch_idx + 1}/{total_batches} batches (loss: {total_loss / (batch_idx + 1):.4f})", end='', flush=True)
-    
-    print()  # New line after progress
-    avg_loss = total_loss / len(dataloader)
-    
-    # Unclipped stats
-    avg_unclipped = float(np.mean(unclipped_grad_norms))
-    max_unclipped = float(np.max(unclipped_grad_norms))
-    
-    # Clipped stats
-    avg_clipped = float(np.mean(clipped_grad_norms))
-    max_clipped = float(np.max(clipped_grad_norms))
-    
-    return {
-        'loss': avg_loss,
-        'avg_unclipped': avg_unclipped,
-        'max_unclipped': max_unclipped,
-        'avg_clipped': avg_clipped,
-        'max_clipped': max_clipped,
-        'layer_grad_stats': layer_grad_stats
-    }
-
+# ==============================================================================
+# MAIN TRAINING FUNCTION
+# Utility functions are imported from common modules
+# ==============================================================================
 
 def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optional[Dict] = None, dataset_version: Optional[str] = None):
     """
@@ -1045,11 +600,6 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
             static_test_np = None
             has_static_features = False
             
-            # Debug: List files in data_path to verify static files were downloaded
-            print(f"  🔍 Files in {data_path}:")
-            for f in sorted(data_path.glob('*.npy')):
-                print(f"     - {f.name}")
-            
             if (data_path / 'static_train.npy').exists():
                 # Check config to see if static features are enabled
                 config_static_features = config['model'].get('static_features', [])
@@ -1060,11 +610,6 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
                     static_train_np = np.load(data_path / 'static_train.npy', allow_pickle=True)
                     static_val_np = np.load(data_path / 'static_val.npy', allow_pickle=True)
                     static_test_np = np.load(data_path / 'static_test.npy', allow_pickle=True)
-                    print(f"  ✅ Loaded static features: train{static_train_np.shape}, val{static_val_np.shape}, test{static_test_np.shape}")
-                else:
-                    # Keep as None when disabled (matching decoder)
-                    print(f"  ⚠️  Static feature files exist but DISABLED in config (static_features=[])")
-                    print(f"     Will pass None to model (matching decoder)")
             
             # Handle object dtype
             if train_X_np.dtype == object:
@@ -1147,7 +692,6 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
                 'test': DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
             }
             scalers = None  # Scalers not available when loading from numpy
-            print("✅ Data loaded!")
         else:
             # No preprocessed data found
             raise FileNotFoundError(
@@ -1156,11 +700,6 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
                 f"  python scripts/05_deployment/generate_dataset.py --model-type tft-augmented --config {config_path}"
             )
     
-    # Print detailed feature information
-    print("\n" + "="*80)
-    print("   Feature Configuration")
-    print("="*80)
-    
     # Get sample batch to determine actual feature count
     sample_batch = next(iter(dataloaders['train']))
     # Always 3 items: (X, y, static) - static may be empty placeholder
@@ -1168,11 +707,6 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     num_features = batch_X.shape[2]
     lookback = batch_X.shape[1]
     num_horizons = batch_y.shape[1]
-    
-    print(f"\n📊 Data Dimensions:")
-    print(f"  Lookback window: {lookback} timesteps")
-    print(f"  Number of features: {num_features}")
-    print(f"  Prediction horizons: {num_horizons}")
     
     # Update config with actual lookback from data (important for causal mask sizing)
     config['data']['lookback_window'] = lookback
@@ -1330,53 +864,11 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     model_config = config['model']
     training_config = config['training']
     
-    print("\n" + "="*80)
-    print("   Model Configuration")
-    print("="*80)
-    print(f"\nArchitecture: Temporal Fusion Transformer (TFT)")
-    print(f"  Components:")
-    use_vsn = model_config.get('use_variable_selection', True)
-    if use_vsn:
-        print(f"    - Variable Selection Network (VSN) ✓")
-    else:
-        print(f"    - Variable Selection Network (VSN) ✗ DISABLED")
-        print(f"    - Linear Feature Projection (VSN replacement)")
-    
-    use_lstm = model_config.get('use_lstm', True)
-    if use_lstm:
-        lstm_layers = model_config.get('lstm_layers', 1)
-        print(f"    - LSTM Encoder ({lstm_layers} layer{'s' if lstm_layers > 1 else ''})")
-    else:
-        print(f"    - LSTM Encoder ✗ DISABLED")
-    
-    print(f"    - Gated Residual Networks (GRN)")
-    
-    attention_layers = model_config.get('attention_layers', 1)
-    print(f"    - Temporal Self-Attention ({model_config['attention_heads']} heads, {attention_layers} layer{'s' if attention_layers > 1 else ''})")
-    print(f"    - Quantile Output Heads")
-    print(f"  Hidden size: {model_config['hidden_size']}")
-    print(f"  Dropout: {model_config['dropout']}")
-    print(f"\nTraining:")
-    print(f"  Epochs: {training_config['epochs']}")
-    print(f"  Batch size: {training_config['batch_size']}")
-    print(f"  Learning rate: {training_config['learning_rate']}")
-    print(f"  Early stopping patience: {training_config['early_stopping']['patience']}")
-    
     # Setup TensorBoard
-    print(f"\n🔍 Initializing TensorBoard...")
-    print(f"   Config tensorboard enabled: {config.get('logging', {}).get('tensorboard', False)}")
     writer = tb_utils.initialize_tensorboard_writer(config, 'tft', '')
     
-    if writer is None:
-        print(f"\n⚠️  CRITICAL: TensorBoard writer is None!")
-        print(f"   All TensorBoard logging will be skipped.")
-    else:
-        print(f"\n✅ TensorBoard writer initialized successfully")
-    
     # Initialize TFT model
-    print("\n" + "="*80)
-    print("   Initializing Temporal Fusion Transformer")
-    print("="*80)
+    print(f"\n🏗️  Initializing TFT model...")
     
     # Pass actual feature count from data (after pivoting)
     model = TemporalFusionTransformer(config, num_features=num_features).to(device)
@@ -1384,8 +876,7 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"  Total parameters: {total_params:,}")
-    print(f"  Trainable parameters: {trainable_params:,}")
+    print(f"   Parameters: {trainable_params:,} trainable")
     
     # Log experiment metadata to TensorBoard
     # Only include enabled components
@@ -1425,31 +916,12 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
     
     print(f"\u2705 Logged dataset and model info to TensorBoard\n")
     
-    # Setup optimizer and loss
-    optimizer = optim.Adam(
-        model.parameters(),
-        lr=training_config['learning_rate'],
-        weight_decay=training_config.get('weight_decay', 0.0)  # L2 regularization
-    )
+    # Setup optimizer and loss using common utilities
+    optimizer = create_optimizer(model, config)
     criterion = nn.MSELoss()
     
     # Setup learning rate scheduler (if enabled)
-    scheduler = None
-    if training_config.get('lr_scheduler', {}).get('enabled', False):
-        scheduler_config = training_config['lr_scheduler']
-        if scheduler_config['type'] == 'reduce_on_plateau':
-            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer,
-                mode='min',
-                factor=scheduler_config.get('factor', 0.5),
-                patience=scheduler_config.get('patience', 5),
-                min_lr=scheduler_config.get('min_lr', 0.00001)
-            )
-            print(f"\n📉 Learning Rate Scheduler: ReduceLROnPlateau")
-            print(f"   Mode: min (reduce on validation loss plateau)")
-            print(f"   Factor: {scheduler_config.get('factor', 0.5)}")
-            print(f"   Patience: {scheduler_config.get('patience', 5)}")
-            print(f"   Min LR: {scheduler_config.get('min_lr', 0.00001)}")
+    scheduler = create_scheduler(optimizer, config)
     
     # Create unique output directory per run
     # Get run name from config or generate timestamp-based one
@@ -1542,31 +1014,9 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
         metrics = compute_metrics(all_preds, all_targets, horizons=horizons_config)
         
         epoch_time = time.time() - epoch_start_time
-        total_elapsed = time.time() - training_start_time
         
-        print(f"\nEpoch {epoch+1}/{training_config['epochs']} - {epoch_time/60:.1f} min (total: {total_elapsed/60:.1f} min)")
-        print(f"  Train Loss: {train_loss:.6f}")
-        print(f"  Val   Loss: {val_loss:.6f}, MAE: {metrics['mae']:.6f}, RMSE: {metrics['rmse']:.6f}")
-        print(f"  Dir Acc (H1): {metrics['dir_acc']:.2f}%")
-        
-        # Print per-horizon MAE
-        horizon_strs = []
-        for key, value in metrics.items():
-            if 'MAE' in key and key != 'mae':  # Skip overall MAE
-                horizon_strs.append(f"{key}={value:.6f}")
-        if horizon_strs:
-            print(f"  Per-Horizon MAE: {', '.join(horizon_strs)}")
-        
-        print(f"  Grad Norm (unclipped): avg={avg_unclipped:.4f}, max={max_unclipped:.4f}")
-        print(f"  Grad Norm (clipped):   avg={avg_clipped:.4f}, max={max_clipped:.4f}")
-        
-        # Print layer-wise gradient stats every 10 epochs
-        if (epoch + 1) % 10 == 0 and layer_grad_stats:
-            print(f"  Layer Gradients (batch 1):")
-            for layer_name in ['VSN', 'Input', 'LSTM_L0', 'LSTM_L1', 'LSTM_L2', 'Attention', 'Feedforward', 'Output']:
-                if layer_name in layer_grad_stats:
-                    stats = layer_grad_stats[layer_name]
-                    print(f"    {layer_name:12s}: norm={stats['norm']:.4f}, max={stats['max']:.4f}, std={stats['std']:.4f}")
+        print(f"\nEpoch {epoch+1}/{training_config['epochs']} ({epoch_time/60:.1f}min) - "
+              f"Train: {train_loss:.4f}, Val: {val_loss:.4f}, MAE: {metrics['mae']:.4f}, Dir Acc: {metrics['dir_acc']:.1f}%")
         
         # Log to TensorBoard
         try:
@@ -1592,159 +1042,9 @@ def train(config_path: str, dataloaders: Optional[Dict] = None, scalers: Optiona
         # Log gradient and weight histograms to TensorBoard (every 10 epochs)
         if (epoch + 1) % 10 == 0:
             try:
-                # Get a fresh batch and compute gradients
-                model.train()
-                for X_batch, y_batch, static_batch in dataloaders['train']:
-                    X_batch = X_batch.to(device)
-                    y_batch = y_batch.to(device)
-                    static_batch = static_batch.to(device) if static_batch is not None else None
-                    
-                    optimizer.zero_grad()
-                    predictions = model(X_batch, static_features=static_batch, y_future=y_batch, teacher_forcing=True)
-                    loss = criterion(predictions, y_batch)
-                    loss.backward()
-                    break  # Only need one batch for histogram
-                
-                # Compute detailed layer-wise gradient stats
-                layer_stats = compute_layer_grad_stats(model)
-                print("  Layer Gradients (detailed):")
-                for layer_name, stats in sorted(layer_stats.items()):
-                    print(
-                        f"    {layer_name:15s}: "
-                        f"norm={stats['norm']:.6f}, "
-                        f"max={stats['max']:.6f}, "
-                        f"std={stats['std']:.6f}"
-                    )
-                
-                # Log histograms to TensorBoard
                 tb_utils.log_gradients_and_weights(writer, model, epoch)
-                if writer is not None:
-                    writer.flush()
-                print(f"  ✅ Logged gradient/weight histograms to TensorBoard")
-                
-                # Simple attention statistics (doesn't break forward pass)
-                try:
-                    model.eval()
-                    with torch.no_grad():
-                        # Get one validation batch
-                        for val_batch in dataloaders['val']:
-                            val_X, val_y, val_static = val_batch
-                            val_X = val_X.to(device)
-                            val_static = val_static.to(device) if has_static_features else None
-                            
-                            # Run normal forward pass
-                            predictions = model(val_X, static_features=val_static)
-                            
-                            # Print basic attention layer statistics
-                            print(f"\n  📊 Attention Layer Statistics (Epoch {epoch+1}):")
-                            
-                            # Check attention layer weights/activations
-                            for layer_idx, layer in enumerate(model.transformer_encoder.layers):
-                                attn_module = layer.self_attn
-                                
-                                # Get weight norms
-                                in_proj_weight = attn_module.in_proj_weight
-                                out_proj_weight = attn_module.out_proj.weight
-                                
-                                in_norm = in_proj_weight.norm().item()
-                                out_norm = out_proj_weight.norm().item()
-                                in_std = in_proj_weight.std().item()
-                                out_std = out_proj_weight.std().item()
-                                
-                                print(f"     Layer {layer_idx}: in_proj_norm={in_norm:.3f}, out_proj_norm={out_norm:.3f}")
-                                print(f"                in_proj_std={in_std:.4f}, out_proj_std={out_std:.4f}")
-                            
-                            # Check encoder output statistics (proxy for attention effectiveness)
-                            with torch.no_grad():
-                                # Get intermediate representation
-                                if hasattr(model, 'feature_projection'):
-                                    features = model.feature_projection(val_X[:1])
-                                else:
-                                    x_reshaped = val_X[:1].unsqueeze(-1)
-                                    features, _ = model.variable_selection(x_reshaped)
-                                
-                                features = model.pos_encoder(features)
-                                features = model.dropout_layer(features)
-                                
-                                # Pass through transformer
-                                mask = model.causal_mask[:features.size(1), :features.size(1)]
-                                encoded = model.transformer_encoder(features, mask=mask)
-                                
-                                # Statistics on encoded output
-                                enc_mean = encoded.mean().item()
-                                enc_std = encoded.std().item()
-                                enc_max = encoded.abs().max().item()
-                                
-                                print(f"\n     Encoded output: mean={enc_mean:.4f}, std={enc_std:.4f}, max_abs={enc_max:.4f}")
-                                
-                                # Check if output is collapsing (all near zero)
-                                if enc_std < 0.01:
-                                    print(f"     ⚠️  WARNING: Low variance - possible attention collapse!")
-                                elif enc_std > 0.5:
-                                    print(f"     ✅ Good variance - attention is active")
-                                
-                                # Timestep group analysis - where is attention focusing?
-                                seq_len = encoded.size(1)
-                                
-                                # Split into groups: beginning (0-25%), middle (37.5-62.5%), end (75-100%)
-                                begin_end = seq_len // 4
-                                mid_start = int(seq_len * 0.375)
-                                mid_end = int(seq_len * 0.625)
-                                end_start = int(seq_len * 0.75)
-                                
-                                # Compute statistics for each region
-                                begin_region = encoded[:, :begin_end, :]
-                                mid_region = encoded[:, mid_start:mid_end, :]
-                                end_region = encoded[:, end_start:, :]
-                                
-                                begin_std = begin_region.std().item()
-                                mid_std = mid_region.std().item()
-                                end_std = end_region.std().item()
-                                
-                                begin_mean_abs = begin_region.abs().mean().item()
-                                mid_mean_abs = mid_region.abs().mean().item()
-                                end_mean_abs = end_region.abs().mean().item()
-                                
-                                # Normalize to percentages
-                                total_activity = begin_mean_abs + mid_mean_abs + end_mean_abs
-                                begin_pct = (begin_mean_abs / total_activity) * 100
-                                mid_pct = (mid_mean_abs / total_activity) * 100
-                                end_pct = (end_mean_abs / total_activity) * 100
-                                
-                                print(f"\n  📍 Timestep Attention Focus (Activity Distribution):")
-                                print(f"     Beginning [t=0-{begin_end-1}]:      {begin_pct:.1f}% (std={begin_std:.3f})")
-                                print(f"     Middle [t={mid_start}-{mid_end-1}]:     {mid_pct:.1f}% (std={mid_std:.3f})")
-                                print(f"     End [t={end_start}-{seq_len-1}]:        {end_pct:.1f}% (std={end_std:.3f})")
-                                
-                                # Show bar chart
-                                max_pct = max(begin_pct, mid_pct, end_pct)
-                                begin_bar = '█' * int((begin_pct / max_pct) * 30)
-                                mid_bar = '█' * int((mid_pct / max_pct) * 30)
-                                end_bar = '█' * int((end_pct / max_pct) * 30)
-                                
-                                print(f"\n     Visual:")
-                                print(f"     Beginning: {begin_bar} {begin_pct:.1f}%")
-                                print(f"     Middle:    {mid_bar} {mid_pct:.1f}%")
-                                print(f"     End:       {end_bar} {end_pct:.1f}%")
-                                
-                                # Interpretation
-                                if end_pct > 40:
-                                    print(f"     💡 Strong recent focus - model using recent past")
-                                elif mid_pct > 40:
-                                    print(f"     💡 Balanced temporal focus - looking at history")
-                                elif begin_pct > 40:
-                                    print(f"     💡 Distant past focus - long-term patterns")
-                            
-                            break  # Only need one batch
-                    model.train()
-                except Exception as e:
-                    print(f"  ⚠️  ERROR logging attention stats: {e}")
-                    import traceback
-                    traceback.print_exc()
             except Exception as e:
-                print(f"  ⚠️  ERROR logging histograms: {e}")
-                import traceback
-                traceback.print_exc()
+                pass  # Silently skip if TensorBoard logging fails
         
         # Learning rate scheduler step (if enabled)
         if scheduler is not None:
