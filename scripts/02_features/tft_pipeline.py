@@ -732,3 +732,118 @@ class TFTDataPipeline:
         df_raw.to_csv(raw_dir / 'tft_features.csv', index=False)
         
         print(f"  ✅ CSV: {raw_dir}/tft_features.csv")
+
+
+# ==============================================================================
+# BACKWARD COMPATIBILITY WRAPPER
+# Provides same interface as old tft/tft_data_loader.py for easy migration
+# ==============================================================================
+
+def create_data_loaders(config_path: str = 'configs/model_tft_config.yaml',
+                        export_temp: bool = False,
+                        force_refresh: bool = False):
+    """Create PyTorch DataLoaders for train/val/test.
+    
+    This is a compatibility wrapper that provides the same interface as the old
+    tft/tft_data_loader.py create_data_loaders() function.
+    
+    Args:
+        config_path: Path to config YAML
+        export_temp: If True, export raw data to temp/ directory (for debugging)
+        force_refresh: If True, always fetch from BigQuery (ignore cached numpy arrays)
+        
+    Returns:
+        Tuple of (dataloaders, scalers) where:
+        - dataloaders: Dict with 'train', 'val', 'test' DataLoaders
+        - scalers: Dict of fitted scalers or None
+    """
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+    from pathlib import Path
+    
+    # Load config
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    # Check if pre-processed numpy arrays exist (unless force_refresh is True)
+    processed_dir = Path('data/processed')
+    train_X_file = processed_dir / 'X_train.npy'
+    train_y_file = processed_dir / 'y_train.npy'
+    train_ts_file = processed_dir / 'ts_train.npy'
+    
+    use_cached = (train_X_file.exists() and train_y_file.exists() and train_ts_file.exists()) and not force_refresh
+    
+    if use_cached:
+        # Load pre-processed data from numpy arrays
+        print("\n📂 Loading pre-processed data from disk (skipping BigQuery)...")
+        splits = {}
+        for split_name in ['train', 'val', 'test']:
+            X = np.load(processed_dir / f'X_{split_name}.npy', allow_pickle=True)
+            y = np.load(processed_dir / f'y_{split_name}.npy', allow_pickle=True)
+            ts = np.load(processed_dir / f'ts_{split_name}.npy', allow_pickle=True)
+            
+            # Ensure arrays are float type (not object)
+            X = X.astype(np.float32)
+            y = y.astype(np.float32)
+            
+            splits[split_name] = (X, y, ts)
+            print(f"  ✅ {split_name}: X{X.shape}, y{y.shape}, ts{ts.shape}")
+        
+        # Load scalers
+        scalers_file = processed_dir / 'scalers.pkl'
+        if scalers_file.exists():
+            with open(scalers_file, 'rb') as f:
+                scalers = pickle.load(f)
+            print(f"  ✅ Loaded scalers from {scalers_file}")
+        else:
+            print(f"  ⚠️  No scalers file found")
+            scalers = None
+    else:
+        # Prepare data from BigQuery using new pipeline
+        print("\n📂 No pre-processed data found, generating with TFTDataPipeline...")
+        pipeline = TFTDataPipeline(config_path, export_temp=export_temp)
+        splits_dict = pipeline.prepare_data()
+        
+        # Convert to same format as cached data
+        splits = {}
+        for split_name in ['train', 'val', 'test']:
+            X, y, ts = splits_dict[split_name]
+            splits[split_name] = (X.astype(np.float32), y.astype(np.float32), ts)
+        
+        print(f"\n✅ Data generated and saved to {processed_dir}/")
+        
+        # Load scalers
+        scalers_file = processed_dir / 'scalers.pkl'
+        if scalers_file.exists():
+            with open(scalers_file, 'rb') as f:
+                scalers = pickle.load(f)
+            print(f"  ✅ Loaded scalers from {scalers_file}")
+        else:
+            scalers = None
+    
+    # Create PyTorch DataLoaders
+    batch_size = config['training']['batch_size']
+    num_workers = config.get('hardware', {}).get('num_workers', 0)
+    pin_memory = config.get('hardware', {}).get('pin_memory', False)
+    
+    dataloaders = {}
+    for split_name, (X, y, ts) in splits.items():
+        # Convert to PyTorch tensors
+        X_tensor = torch.tensor(X, dtype=torch.float32)
+        y_tensor = torch.tensor(y, dtype=torch.float32)
+        
+        # Create dataset (without timestamps for now)
+        dataset = TensorDataset(X_tensor, y_tensor)
+        
+        # Create dataloader
+        dataloaders[split_name] = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=(split_name == 'train'),
+            num_workers=num_workers,
+            pin_memory=pin_memory
+        )
+    
+    print(f"\n✅ DataLoaders created: batch_size={batch_size}")
+    
+    return dataloaders, scalers

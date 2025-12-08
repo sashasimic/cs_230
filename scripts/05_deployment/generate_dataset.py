@@ -5,15 +5,19 @@ Dataset Generation and GCS Upload Script
 This script generates versioned datasets for model training and uploads them to GCS.
 It supports multiple model types with automatic data loader selection.
 
- MODEL-TYPE-SPECIFIC DATA LOADERS:
-   The script dynamically loads the appropriate data loader based on --model-type:
+ DATA PIPELINE:
+   All models use the same model-agnostic data pipeline:
    
-   - 'tft' → scripts/02_features/tft/tft_data_loader.py (MultiTickerDataLoader)
-   - 'lstm' → scripts/02_features/lstm/lstm_data_loader.py (LSTMDataLoader)
-   - 'transformer' → scripts/02_features/transformer/transformer_data_loader.py (TransformerDataLoader)
+   Base: scripts/02_features/data_loader.py (MultiTickerDataLoader)
+   TFT-specific: scripts/02_features/tft_pipeline.py (TFTDataPipeline)
    
-   Each data loader implements its own feature engineering pipeline and exports
-   model-specific features to data/raw/ and data/processed/.
+   Model types supported:
+   - 'tft' → TFT without augmentation
+   - 'tft-augmented' → TFT with ticker augmentation (enabled via config)
+   - 'decoder_transformer' → Decoder-only transformer (uses same data as TFT)
+   - 'lstm' → LSTM baseline (uses same data as TFT)
+   
+   All models share the same preprocessed data format (X_*.npy, y_*.npy, scalers.pkl).
 
  VERSIONING STRUCTURE:
    Datasets are stored with model-type-specific paths:
@@ -74,6 +78,7 @@ def load_data_loader_for_model(model_type: str):
     tft_pipeline_path = Path(__file__).parent.parent / '02_features' / 'tft_pipeline.py'
 
     # Map model types to their data loader paths and class names
+    # All models use the same TFTDataPipeline (model-agnostic base)
     model_loaders = {
         'tft': {
             'path': tft_pipeline_path,
@@ -83,24 +88,19 @@ def load_data_loader_for_model(model_type: str):
         'tft-augmented': {
             'path': tft_pipeline_path,
             'module_name': 'tft_pipeline',
-            'class_name': 'TFTDataPipeline'  # Same class, checks config
+            'class_name': 'TFTDataPipeline'  # Same class, checks config for augmentation
         },
         'decoder_transformer': {
-            # Uses same data format as TFT
-            'path': Path(__file__).parent.parent / '02_features' / 'tft' / 'tft_data_loader.py',
-            'module_name': 'tft_data_loader',
-            'class_name': 'MultiTickerDataLoader'
+            # Uses same data pipeline as TFT
+            'path': tft_pipeline_path,
+            'module_name': 'tft_pipeline',
+            'class_name': 'TFTDataPipeline'
         },
         'lstm': {
-            # Uses same data format as TFT and decoder_transformer
-            'path': Path(__file__).parent.parent / '02_features' / 'tft' / 'tft_data_loader.py',
-            'module_name': 'tft_data_loader',
-            'class_name': 'MultiTickerDataLoader'
-        },
-        'transformer': {
-            'path': Path(__file__).parent.parent / '02_features' / 'transformer' / 'transformer_data_loader.py',
-            'module_name': 'transformer_data_loader',
-            'class_name': 'TransformerDataLoader'
+            # Uses same data pipeline as TFT
+            'path': tft_pipeline_path,
+            'module_name': 'tft_pipeline',
+            'class_name': 'TFTDataPipeline'
         }
     }
     
@@ -119,12 +119,12 @@ def load_data_loader_for_model(model_type: str):
     
     # Special handling for augmented loader: load base loader first
     if model_type == 'tft-augmented':
-        # Load base TFT loader first
-        base_path = Path(__file__).parent.parent / '02_features' / 'tft' / 'tft_data_loader.py'
-        base_spec = importlib.util.spec_from_file_location('tft_data_loader', base_path)
+        # Load base TFT pipeline first
+        base_path = Path(__file__).parent.parent / '02_features' / 'tft_pipeline.py'
+        base_spec = importlib.util.spec_from_file_location('tft_pipeline', base_path)
         base_module = importlib.util.module_from_spec(base_spec)
         import sys
-        sys.modules['tft_data_loader'] = base_module  # Make it importable
+        sys.modules['tft_pipeline'] = base_module  # Make it importable
         base_spec.loader.exec_module(base_module)
     
     # Dynamically import the data loader module

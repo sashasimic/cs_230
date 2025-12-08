@@ -100,9 +100,9 @@ def load_data(config_path: str, force_refresh: bool = False):
         dataloaders: Dict of PyTorch DataLoaders
         scalers: Dict of fitted scalers
     """
-    # Import data loader dynamically
-    data_loader_path = project_root / 'scripts' / '02_features' / 'tft' / 'tft_data_loader.py'
-    spec = importlib.util.spec_from_file_location('tft_data_loader', data_loader_path)
+    # Import data loader from new tft_pipeline module
+    data_loader_path = project_root / 'scripts' / '02_features' / 'tft_pipeline.py'
+    spec = importlib.util.spec_from_file_location('tft_pipeline', data_loader_path)
     data_loader_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(data_loader_module)
     

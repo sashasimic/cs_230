@@ -19,16 +19,51 @@
 
 ---
 
+## 📍 CS230 Project Navigation
+
+**Important:** This project spans multiple branches and repositories. Here's where to find each component:
+
+### **This Repository (`inflation_predictor`)**
+
+| Component | Branch | Description |
+|-----------|--------|-------------|
+| **Data Pipeline & Feature Engineering** | `main` | BigQuery integration, feature generation, data preprocessing |
+| **LSTM Baseline** | `main` | LSTM model for time series forecasting |
+| **Decoder Transformer** | `main` | Decoder-only transformer architecture |
+| **TFT (Temporal Fusion Transformer)** | `main` | Full TFT implementation with VSN, attention, and GRU decoder |
+| **TFT + FinCast Integration** | `sasha-v4` | TFT with FinCast price encoder for enhanced financial features |
+
+### **External Repositories**
+
+| Model | Repository | Description |
+|-------|------------|-------------|
+| **PAN-NAN** | [feiyangk/230proj](https://github.com/feiyangk/230proj) | PAN-NAN architecture (separate team implementation) |
+
+**Quick Navigation:**
+```bash
+# Work with main models (LSTM, Decoder, TFT)
+git checkout main
+
+# Work with TFT + FinCast integration
+git checkout sasha-v4
+
+# View PAN-NAN implementation
+# Visit: https://github.com/feiyangk/230proj
+```
+
+---
+
 ## 🎯 Overview
 
 This project implements a Temporal Fusion Transformer (TFT) for multi-horizon inflation prediction, designed for the CS230 Deep Learning course. It includes:
 
-- **PyTorch TFT Architecture**: LSTM encoder, multi-head attention, variable selection network
-- **Multi-Horizon Forecasting**: Predict multiple time steps ahead simultaneously
-- **Flexible Data Pipeline**: BigQuery integration for market data (SPY, QQQ, IWM, RSP)
+- **PyTorch TFT Architecture**: LSTM encoder, multi-head attention, variable selection network, GRU future decoder
+- **Multi-Horizon Forecasting**: Predict multiple time steps ahead simultaneously  
+- **Flexible Data Pipeline**: Model-agnostic BigQuery integration with ticker grouping and augmentation
+- **FinCast Integration**: Optional price encoder integration for enhanced financial features
 - **Production-Ready**: Docker containerization, GCP Vertex AI deployment, TensorBoard logging
-- **Hybrid Development**: Fast local iteration with venv, validated Docker testing before cloud deployment
-- **Comprehensive Logging**: Detailed feature tracking, gradient monitoring, TensorBoard metrics
+- **Modular Codebase**: Shared training utilities, clean separation between models and common components
+- **Optimized Logging**: Clean console output with detailed TensorBoard metrics
 
 ---
 
@@ -43,13 +78,15 @@ inflation_predictor/
 │
 ├── data/
 │   ├── datasets/                # Versioned datasets for reproducibility
-│   │   └── tft/                 # TFT model datasets
-│   │       ├── v1/              # Dataset version 1
-│   │       ├── v2/              # Dataset version 2
-│   │       └── v{N}/            # Each version contains:
-│   │           ├── raw/         #   - tft_features.csv (pivoted, one row per date)
-│   │           ├── processed/   #   - X_*.npy, y_*.npy (train/val/test)
-│   │           └── manifest.yaml#   - Metadata and feature list
+│   │   ├── tft/                 # TFT model datasets
+│   │   │   ├── v1/              # Dataset version 1
+│   │   │   ├── v2/              # Dataset version 2
+│   │   │   └── v{N}/            # Each version contains:
+│   │   │       ├── raw/         #   - tft_features.csv (pivoted, one row per date)
+│   │   │       ├── processed/   #   - X_*.npy, y_*.npy (train/val/test)
+│   │   │       └── manifest.yaml#   - Metadata and feature list
+│   │   ├── decoder_transformer/ # Decoder transformer datasets
+│   │   └── lstm/                # LSTM baseline datasets
 │   ├── raw/                     # Temporary raw data (latest generation)
 │   └── processed/               # Temporary processed data (latest generation)
 │
@@ -60,13 +97,29 @@ inflation_predictor/
 ├── scripts/
 │   ├── 01_extract/              # Data extraction from BigQuery
 │   │   └── extract_tickers.py
-│   ├── 02_features/             # Feature engineering
-│   │   └── tft/
-│   │       └── tft_data_loader.py  # TFT feature preparation
+│   ├── 02_features/             # Feature engineering (model-agnostic modules)
+│   │   ├── data_loader.py       # Base multi-ticker data loader
+│   │   ├── data_grouping.py     # Ticker group feature aggregation
+│   │   ├── data_augmentation.py # Data augmentation utilities
+│   │   └── tft_pipeline.py      # TFT-specific pipeline (uses model-agnostic modules)
 │   ├── 03_training/             # Model training
-│   │   └── tft/
-│   │       ├── tft_train.py     # Cloud training (Vertex AI)
-│   │       └── tft_train_local.py  # Local training
+│   │   ├── common/              # Shared training utilities
+│   │   │   ├── nn_modules.py    #   - Neural network components (GRN, PositionalEncoding)
+│   │   │   ├── training_utils.py#   - Training loops, optimizer/scheduler creation
+│   │   │   ├── metrics.py       #   - Metric computation (MAE, RMSE, directional accuracy)
+│   │   │   └── visualization.py #   - TensorBoard and plotting utilities
+│   │   ├── tft/                 # Temporal Fusion Transformer
+│   │   │   ├── tft_train.py     #   - Core training logic (shared by local & cloud)
+│   │   │   └── tft_train_local.py  #   - Local training wrapper
+│   │   ├── decoder_transformer/ # Decoder-only Transformer
+│   │   │   ├── decoder_transformer_train.py       # Core training logic
+│   │   │   ├── decoder_transformer_train_local.py # Local training wrapper
+│   │   │   └── fincast_extension.py               # FinCast integration
+│   │   ├── lstm/                # LSTM Baseline
+│   │   │   ├── lstm_train.py    #   - Core training logic
+│   │   │   └── lstm_train_local.py #   - Local training wrapper
+│   │   ├── inspect_model.py     # Model architecture inspection tool
+│   │   └── test_architectures.py # Architecture comparison tests
 │   ├── 04_inference/            # Model inference
 │   ├── 05_deployment/           # GCP deployment utilities
 │   │   ├── generate_dataset.py  # Create versioned datasets
@@ -76,13 +129,23 @@ inflation_predictor/
 │   └── dummy/                   # Legacy dummy data generation
 │
 ├── utils/
+│   ├── __init__.py              # Package initialization
 │   ├── config_loader.py         # YAML config utilities
 │   ├── logger.py                # Logging setup
+│   ├── benchmarks.py            # Model benchmarking utilities
 │   └── visualization.py         # Plotting utilities
+│
+├── external/
+│   └── fincast/                 # FinCast price encoder (git submodule)
 │
 ├── logs/                        # Training logs and metrics
 ├── checkpoints/                 # Training checkpoints
 ├── notebooks/                   # Jupyter notebooks
+├── temp/                        # Temporary files (gitignored)
+├── .env                         # Environment variables (gitignored)
+├── .env.example                 # Example environment file
+├── .gitignore                   # Git ignore rules
+├── .dockerignore                # Docker ignore rules
 ├── datasets_registry.yaml       # Dataset version registry
 ├── requirements.txt             # Python dependencies
 └── README.md                    # This file
@@ -93,11 +156,11 @@ inflation_predictor/
 ## 🚀 Installation
 
 ### Prerequisites
-- Python 3.9+ (3.10 recommended)
+- Python 3.12+ (3.12 recommended for Apple Silicon compatibility)
 - pip package manager
-- Git
+- Git (with submodules support for FinCast)
 - Google Cloud SDK (for cloud deployment)
-- Access to BigQuery with ticker data, GDELT data, and (optionally) synthetic data
+- Access to BigQuery with ticker data and GDELT sentiment data
 
 ### Local Setup
 
@@ -204,7 +267,7 @@ bq query --use_legacy_sql=false \
 
 ```bash
 # Run TFT data loader to create local training data
-python scripts/02_features/tft/tft_data_loader.py
+python scripts/02_features/tft_pipeline.py
 
 # This will:
 # 1. Query ticker data from BigQuery (SPY, QQQ, IWM, RSP)
@@ -316,42 +379,42 @@ tensorboard --logdir logs/tensorboard/decoder_transformer  # Decoder only
 ### **What You'll See:**
 
 ```
-================================================================================
-   Feature Configuration
-================================================================================
+🏗️  Initializing TFT model...
+   Parameters: 1,234,567 trainable
 
-📊 Data Dimensions:
-  Lookback window: 192 timesteps
-  Number of features: 7
-  Prediction horizons: 3
+🏋️  Starting training...
 
-🔑 TIME-VARYING KNOWN Features (3):
-   1. month_sin
-   2. month_cos
-   3. is_weekend
+Epoch 1/200 (2.3min) - Train: 0.0234, Val: 0.0256, MAE: 0.0123, Dir Acc: 52.3%
 
-📊 TIME-VARYING UNKNOWN Features (4):
-   1. close
-   2. volume
-   3. sma_50
-   4. sma_200
+Epoch 2/200 (2.1min) - Train: 0.0198, Val: 0.0215, MAE: 0.0107, Dir Acc: 54.1%
+  ⭐ New best model! Saving to models/tft/tft_best.pt
 
-🎯 Output Targets (3 horizons):
-  1. Horizon 4 (target_4_periods_ahead)
-  2. Horizon 8 (target_8_periods_ahead)
-  3. Horizon 16 (target_16_periods_ahead)
+Epoch 3/200 (2.2min) - Train: 0.0176, Val: 0.0189, MAE: 0.0095, Dir Acc: 56.8%
+  ⭐ New best model! Saving to models/tft/tft_best.pt
 
-================================================================================
-Epoch 1/100
-  Train Loss: 0.0234
-  Val Loss: 0.0256, MAE: 0.0123, RMSE: 0.0178
-  Dir Acc: 52.34%
-  Grad Norm: avg=0.1234, max=0.5678, min=0.0123
-  Layer Gradients (batch 1):
-    Input       : norm=0.1234, max=0.5678, std=0.0234
-    LSTM_L0     : norm=0.2345, max=0.6789, std=0.0345
-    ...
+...
+
+Epoch 50/200 (2.0min) - Train: 0.0045, Val: 0.0052, MAE: 0.0026, Dir Acc: 67.2%
+  ⭐ New best model! Saving to models/tft/tft_best.pt
+
+✅ Training complete!
+
+📊 Validation Set Results (Best Model):
+  Val Loss: 0.005234
+  MAE: 0.002567, RMSE: 0.003421
+  Directional Accuracy: 67.2%
+
+📊 Test Set Results:
+  Test Loss: 0.005489
+  MAE: 0.002634, RMSE: 0.003512
+  Directional Accuracy: 66.8%
 ```
+
+**Notes:**
+- Clean, concise output per epoch
+- Detailed metrics logged to TensorBoard
+- Best model automatically saved
+- Final evaluation on validation and test sets
 
 
 ## ☁️ Quick Start (GCP Cloud Training)
@@ -387,7 +450,7 @@ bash scripts/05_deployment/setup_gcp.sh
 python scripts/05_deployment/generate_dataset.py --version v1 --model-type tft
 
 # This will:
-# - Run tft_data_loader.py to generate features from BigQuery
+# - Run tft_pipeline.py to generate features from BigQuery
 # - Package data to data/datasets/tft/v1/
 # - Upload to gs://YOUR_PROJECT_ID-models/datasets/tft/v1/
 # - Register in datasets_registry.yaml
@@ -543,37 +606,30 @@ Dataset Version: v1
   ✅ Processed data loaded to: data/processed/
   ✅ Raw data loaded to: data/raw/
 
-================================================================================
-   Feature Configuration
-================================================================================
+🏗️  Initializing TFT model...
+   Parameters: 1,234,567 trainable
 
-📊 Data Dimensions:
-  Lookback window: 192 timesteps
-  Number of features: 7
-  Prediction horizons: 3
+🏋️  Starting training...
 
-🔑 TIME-VARYING KNOWN Features (3):
-   1. month_sin
-   2. month_cos
-   3. is_weekend
+Epoch 1/200 (2.3min) - Train: 0.0234, Val: 0.0256, MAE: 0.0123, Dir Acc: 52.3%
 
-📊 TIME-VARYING UNKNOWN Features (4):
-   1. close
-   2. volume
-   3. sma_50
-   4. sma_200
+Epoch 2/200 (2.1min) - Train: 0.0198, Val: 0.0215, MAE: 0.0107, Dir Acc: 54.1%
+  ⭐ New best model! Saving checkpoint...
 
-================================================================================
-Epoch 1/100
-  Train Loss: 0.0234
-  Val Loss: 0.0256, MAE: 0.0123, RMSE: 0.0178
-  Dir Acc: 52.34%
-  Grad Norm: avg=0.1234, max=0.5678, min=0.0123
-  Layer Gradients (batch 1):
-    Input       : norm=0.1234, max=0.5678, std=0.0234
-    LSTM_L0     : norm=0.2345, max=0.6789, std=0.0345
-    LSTM_L1     : norm=0.3456, max=0.7890, std=0.0456
-    ...
+Epoch 3/200 (2.2min) - Train: 0.0176, Val: 0.0189, MAE: 0.0095, Dir Acc: 56.8%
+  ⭐ New best model! Saving checkpoint...
+
+...
+
+✅ Training complete!
+
+📊 Final Results:
+  Best Val Loss: 0.005234
+  Test MAE: 0.002634, RMSE: 0.003512
+  Directional Accuracy: 66.8%
+
+📤 Uploading model to GCS...
+✅ Model saved to: gs://YOUR_PROJECT_ID-models/models/tft/tft_best.pt
 ```
 
 ---
@@ -628,16 +684,16 @@ model:
 
 ### ✅ Completed Features
 
-- [x] Modular project structure
-- [x] 3 model architectures (MLP, LSTM, Transformer)
-- [x] Flexible data pipeline (local, BigQuery, dummy)
+- [x] Modular project structure with shared utilities
+- [x] TFT architecture with LSTM, attention, VSN, and GRU decoder
+- [x] Model-agnostic data pipeline (BigQuery integration)
+- [x] Ticker grouping and data augmentation
+- [x] FinCast price encoder integration (optional)
 - [x] Configurable training (YAML + CLI)
 - [x] Early stopping & checkpointing
-- [x] TensorBoard integration
-- [x] Training visualization plots
-- [x] CSV metric logging
-- [x] GCP deployment support
-- [x] Comprehensive logging
+- [x] TensorBoard integration with clean console output
+- [x] GCP Vertex AI deployment with Docker
+- [x] Versioned datasets with GCS sync
 - [x] Reproducible experiments (seeding)
 
 ### 🚧 Future Enhancements
@@ -657,9 +713,10 @@ model:
 
 ### Documentation
 
-- [TensorFlow Documentation](https://www.tensorflow.org/api_docs)
-- [Keras Guide](https://keras.io/guides/)
-- [Google Cloud AI Platform](https://cloud.google.com/ai-platform/docs)
+- [PyTorch Documentation](https://pytorch.org/docs/stable/index.html)
+- [PyTorch nn.Transformer](https://pytorch.org/docs/stable/generated/torch.nn.Transformer.html)
+- [Google Cloud Vertex AI](https://cloud.google.com/vertex-ai/docs)
+- [BigQuery Python Client](https://cloud.google.com/python/docs/reference/bigquery/latest)
 
 ### Notebooks
 
