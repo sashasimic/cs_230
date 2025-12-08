@@ -1,4 +1,4 @@
-tensorflow==2.15.0  # Use 2.15 with built-in Keras 2.x (Keras 3.x has unfixable dtype issues)
+tensorflow>=2.16.1  # Apple Silicon (M1/M2/M3) compatible, includes Keras 2.x
 numpy>=1.24.0,<2.0  # Pin to <2.0 for compatibility
 pandas>=2.0.0
 matplotlib>=3.7.0
@@ -10,3 +10,12 @@ db-dtypes>=1.1.0  # Required for BigQuery DATE/TIMESTAMP columns
 scikit-learn>=1.3.0  # Feature engineering and preprocessing
 joblib>=1.3.0  # Save/load scalers and models
 pytrends>=4.9.0  # Google Trends API wrapper
+requests>=2.31.0  # HTTP requests for Polygon API
+python-dotenv>=1.0.0  # Environment variable management
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+tensorboard>=2.12.0
+tqdm>=4.65.0  # Progress bars for training
+backtesting>=0.3.3
+google-cloud-aiplatform>=1.38.0

@@ -1,0 +1,3 @@
+[submodule "external/fincast"]
+	path = external/fincast
+	url = https://github.com/vincent05r/FinCast-fts.git

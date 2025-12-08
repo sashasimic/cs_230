@@ -1,0 +1,168 @@
+# BigQuery Configuration (top-level, required by data loader)
+bigquery:
+  project_id: inflation-prediction-478715
+  dataset_id: raw_dataset  # Same as TFT config
+  
+  # Ticker data tables
+  ticker:
+    raw_table: 'raw_ohlcv'  # Template: raw_ohlcv_{ticker}_{frequency}
+    synthetic_table: 'synthetic_indicators'  # Template: synthetic_indicators_{ticker}_{frequency}
+  
+  # GDELT sentiment table
+  gdelt:
+    table: 'gdelt_sentiment'
+    frequency: '1d'
+
+data:
+  # Tickers to load (same as TFT for fair comparison)
+  tickers:
+    symbols:
+      # Equity indices
+      - SPY
+      - QQQ
+      - IWM
+      - RSP
+      # Sectors
+      - XLF
+      - XLI
+      - XLY
+      - XLK
+      - XLE
+      - XLB
+      - XLP
+      - XLV
+      - XLU
+      - XLRE
+      # Fixed income
+      - TLT
+      - IEF
+      - TIP
+      - SHY
+      # Credit
+      - LQD
+      - HYG
+      # Commodities
+      - DBC
+      - USO
+      - GLD
+      # - CPER
+      # Agriculture (target)
+      - DBA
+      - WEAT
+      - SOYB
+      # Currency
+      - UUP
+    frequency: 'daily'
+    
+    # Raw OHLCV features from BigQuery
+    raw_features:
+      - close
+      - volume
+    
+    # Synthetic/technical indicator features
+    synthetic_features:
+      - sma_50
+      - sma_200
+  
+  start_date: '2016-04-01' # ex, 2016-04-01, 2020-05-01
+  end_date: '2025-11-13'
+  frequency: 'daily'
+  lookback_window: 192    # Standardized naming (matches TFT config)
+  prediction_horizons: [7, 14, 30]
+  
+  # Target variable (required by data loader)
+  target: 'agriculture_basket_returns'  # Average return of DBA, WEAT, SOYB
+  target_type: 'agriculture_basket'
+  target_metric: 'returns'
+  train_ratio: 0.70       # Standardized naming (matches TFT config)
+  val_ratio: 0.15         # Standardized naming (matches TFT config)
+  test_ratio: 0.15        # Standardized naming (matches TFT config)
+  
+  # Normalization
+  normalize: true
+  normalization_method: 'standard'  # 'standard' or 'minmax'
+  
+  # Weekend handling (for daily frequency)
+  skip_weekends: true  # Remove Saturday/Sunday from dataset (markets closed)
+  
+  # Forward filling for missing values
+  forward_fill:
+    enabled: true  # Fill missing values with last known value
+    log_stats: true  # Log detailed statistics about forward filling
+    max_fill_limit: 5  # Maximum consecutive periods to forward fill
+  
+  gdelt:
+    enabled: true  # Enable GDELT sentiment features
+    frequency: '1d'  # Must match what's stored in BigQuery
+    topic_groups: ['inflation_prices']
+    features:
+      - weighted_avg_tone
+      - weighted_avg_polarity
+      - num_articles
+      - num_sources
+    normalize_counts: true  # Normalize article/source counts (log1p transform)
+    include_lags: true  # Include lagged sentiment
+    lag_periods: [1, 7, 30]  # 1 day, 1 week, 1 month ago
+
+# FinCast Foundation Model Configuration
+fincast:
+  enabled: false                                           # Enable FinCast backbone for price features
+  checkpoint_path: 'external/fincast/checkpoints/v1.pth'  # Path to pre-trained weights (3.97 GB)
+  
+  # FFM Architecture (fixed by pre-trained model - do not change)
+  d_model: 1280          # FFM embedding dimension
+  n_heads: 16            # FFM attention heads
+  n_layers: 50           # FFM transformer layers
+  d_ff: 5120             # FFM feed-forward dimension (4 * d_model)
+  dropout: 0.1           # FFM dropout rate
+  
+  # Projection layer (trainable)
+  output_dim: 128         # Project FinCast embeddings from 1280 -> 128
+  freeze_backbone: true   # Freeze 991M FinCast parameters (only train projection)
+  lr_scale: 0.2           # Learning rate multiplier for FinCast runs (0.2 = 5x lower)
+
+model:
+  d_model: 96           # Reduced from 128 (smaller model)
+  n_heads: 8            # Keep 8 heads (d_model must be divisible by n_heads)
+  n_layers: 3           # Reduced from 4 (fewer layers)
+  d_ff: 384             # Reduced from 512 (4x d_model)
+  dropout: 0.3          # Increased from 0.2 (more regularization)
+  time_varying_known:
+    - month_sin
+    - month_cos
+    - is_weekend
+  time_varying_unknown:
+    - close
+    - volume
+    - sma_50
+    - sma_200
+    - weighted_avg_tone
+    - weighted_avg_polarity
+    - num_articles
+    - num_sources
+    - sentiment_lag_1
+    - sentiment_lag_7
+    - sentiment_lag_30
+
+training:
+  batch_size: 64
+  epochs: 200  # Number of training epochs (configurable)
+  learning_rate: 0.00005
+  optimizer: 'adam'
+  weight_decay: 0.02          # Increased from 0.01 (more L2 regularization)
+  gradient_clip_norm: 1.0     # Increased from 0.5 (looser clipping)
+  loss_function: 'mse'
+  eval_teacher_forcing: false  # true=faster eval with teacher forcing, false=realistic autoregressive inference
+  early_stopping:
+    patience: 15              # Stop if no improvement for 15 epochs
+
+logging:
+  tensorboard: false          # Disabled for local Mac training (enable on Vertex AI)
+  log_dir: 'logs/tensorboard' # Local TensorBoard directory
+
+# Reproducibility
+seed: 42
+
+hardware:
+  num_workers: 0  # 0 for single process (Mac compatibility)
+  pin_memory: false  # false for CPU training

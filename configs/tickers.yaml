@@ -2,6 +2,9 @@
 # Economic Cycle & Inflation Forecasting Framework
 # Mission: Track cyclical elements and inflation dynamics through market indicators
 
+# ========================================
+# FLAT LIST
+# ========================================
 tickers:
   # ========================================
   # A. EQUITY MARKET INDICES
@@ -70,6 +73,14 @@ tickers:
   - SOYB     # Teucrium Soybean ETF - Food inflation proxy
   - RJA      # Elements Rogers Agriculture ETF - Food inflation proxy
   - GLD      # Gold - Inflation hedge, policy distrust indicator
+
+  - CORN     # Corn - Food inflation proxy
+  - CANE     # Teucrium Sugar Fund (sugar futures)
+  - COW      # Cattle - Livestock inflation proxy
+  - UBC      # other livestock ETNs. Only 269 rows
+  - UGA      # United States Gasoline Fund (RBOB gasoline)
+  - UNG      # United States Natural Gas Fund (nat gas)
+
   
   # ========================================
   # F. REAL ESTATE (Rate & Inflation Link)
@@ -89,29 +100,204 @@ tickers:
 
 # Date range for extraction
 date_range:
-  start_date: '2015-10-28'  # 10 years of data
-  end_date: null  # null = use today's date
+  start_date: '2015-11-12'  # 10 years of data
+  end_date: '2025-11-13'
+
+# Default indicators to compute
+indicators:
+  # Returns
+  - returns          # 1-period % return
+  - returns_5        # 5-period % return
+  - log_returns      # Log returns (stationary)
+  
+  # Volatility (market uncertainty)
+  - volatility_5     # Rolling std of returns (5-period)
+  # - volatility_10    # Rolling std of returns (10-period) (MISSING DATA)
+  - volatility_20    # Rolling std of returns (20-period)
+  # - atr_14           # Average True Range (MISSING DATA)
+  
+  # Momentum (trend strength)
+  - momentum_5       # Price momentum (5-period)
+  - momentum_10      # Price momentum (10-period)
+  # - roc_5            # Rate of Change % (5-period) (EXCLUDED)
+  # - roc_10           # Rate of Change % (10-period) (EXCLUDED)
+  
+  # Volume (buying/selling pressure)
+  - volume_ma_5      # Volume moving average (5-period)
+  - volume_ma_10     # Volume moving average (10-period)
+  - volume_ratio     # Volume strength indicator
+  # - obv              # On-Balance Volume (MISSING DATA)
+  
+  # Price Range
+  - high_low_ratio   # Daily price range ratio
+  
+  # Bollinger Bands
+  - bb_upper_20      # Bollinger Band upper
+  - bb_middle_20     # Bollinger Band middle
+  - bb_lower_20      # Bollinger Band lower
+  - bb_width         # Bollinger Band width
+  
+  # Simple Moving Averages
+  - sma_10
+  - sma_20
+  - sma_50
+  - sma_200
+  
+  # Exponential Moving Averages (MISSING DATA)
+  # - ema_12         # Fast EMA
+  # - ema_26         # Slow EMA
+  
+  # MACD (Moving Average Convergence Divergence) (MISSING DATA)
+  # - macd           # MACD line
+  # - macd_signal    # Signal line
+  # - macd_hist      # Histogram
 
 # BigQuery configuration
-bigquery:
-  project_id: 'sp-indicators'
-  dataset_id: 'macro_signals'
-  table_name: 'raw_ohlcv'
+# NOTE: All BigQuery settings (project_id, dataset_id, table_name) are
+# configured via environment variables in .env (see .env.example)
+# This allows for easier deployment across different environments
 
-# Output configuration
-output:
-  raw_data_path: 'data/raw/stocks_raw.parquet'
-  compression: 'snappy'
+# ========================================
+# TICKER GROUPS (for quick verification)
+# ========================================
+ticker_groups:
+  # Inflation-focused group
+  inflation:
+    - DBC      # Broad Commodities Index
+    - USO      # Crude Oil
+    - BNO      # Brent Oil
+    - DBA      # Agriculture
+    - WEAT     # Wheat
+    - SOYB     # Soybean
+    - CORN     # Corn
+    - CANE     # Sugar
+    - COW      # Cattle
+    - UGA      # Gasoline
+    - UNG      # Natural Gas
   
-# Which columns to extract (set to null to get all)
-columns:
-  - ticker
-  - date
-  - open
-  - high
-  - low
-  - close
-  - volume
-  - vwap  # Volume weighted average price
-  # - transactions  # Uncomment if needed
-  # - timestamp     # Uncomment if needed
+  # Commodities group
+  commodities:
+    - DBC
+    - USO
+    - BNO
+    - CPER
+    - DBA
+    - ORN
+    - WEAT
+    - SOYB
+    - RJA
+    - GLD
+    - CORN
+    - CANE
+    - COW
+    - UBC
+  
+  # Energy group
+  energy:
+    - XLE
+    - USO
+    - BNO
+    - UGA
+    - UNG
+  
+  # Agriculture group
+  agriculture:
+    - DBA
+    - ORN
+    - WEAT
+    - SOYB
+    - RJA
+    - CORN
+    - CANE
+    - COW
+    - UBC
+  
+  # Equity indices
+  equity:
+    - SPY
+    - QQQ
+    - IWM
+    - RSP
+  
+  # Sector ETFs
+  sectors:
+    - XLF
+    - XLI
+    - XLY
+    - XLK
+    - XLE
+    - XLB
+    - XLP
+    - XLV
+    - XLU
+    - XLRE
+  
+  # Fixed income
+  fixed_income:
+    - BIL
+    - SHY
+    - IEF
+    - TLT
+    - TIP
+    - STIP
+  
+  # Credit markets
+  credit:
+    - LQD
+    - HYG
+    - EMB
+  
+  # Currency
+  currency:
+    - UUP
+    - FXE
+  
+  # Real estate
+  real_estate:
+    - ITB
+    - XLRE
+  
+  # All tickers (complete list)
+  all:
+    - SPY
+    - QQQ
+    - IWM
+    - RSP
+    - XLF
+    - XLI
+    - XLY
+    - XLK
+    - XLE
+    - XLB
+    - XLP
+    - XLV
+    - XLU
+    - XLRE
+    - BIL
+    - SHY
+    - IEF
+    - TLT
+    - TIP
+    - STIP
+    - LQD
+    - HYG
+    - EMB
+    - DBC
+    - USO
+    - BNO
+    - CPER
+    - DBA
+    - ORN
+    - WEAT
+    - SOYB
+    - RJA
+    - GLD
+    - CORN
+    - CANE
+    - COW
+    - UBC
+    - UGA
+    - UNG
+    - ITB
+    - UUP
+    - FXE

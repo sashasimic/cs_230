@@ -1,0 +1,66 @@
+# GDELT Sentiment Configuration for BigQuery Data Extraction
+# Economic Cycle & Inflation Forecasting Framework
+# Mission: Track news sentiment around inflation, Fed policy, and economic themes
+
+# Topic Groups - Multiple groups of related topics
+# Each group has a unique ID and its own list of topics
+# Use --topic-group flag to select which group to load (REQUIRED)
+topic_groups:
+  # ========================================
+  # INFLATION & PRICES
+  # ========================================
+  inflation_prices:
+    description: "Inflation, consumer prices, and cost of living"
+    topics:
+      - INFLATION
+      - CONSUMER_PRICE
+      - PRICE_STABILITY
+      - COST_OF_LIVING
+      - FOOD_PRICE
+      - HOUSING_PRICES
+      - NATGASPRICE
+      - FUELPRICES
+      - FOOD_STAPLE
+  
+  # ========================================
+  # MONETARY POLICY & CENTRAL BANKS
+  # ========================================
+  monetary_policy:
+    description: "Federal Reserve, interest rates, and monetary policy"
+    topics:
+      - FED
+      - FEDERAL_RESERVE
+      - INTEREST_RATE
+      - MONETARY_POLICY
+      - CENTRAL_BANK
+      - FOMC
+      - JEROME_POWELL
+
+# Date range for extraction
+date_range:
+  start_date: '2015-11-12'  # 10 years of data
+  end_date: '2025-11-13'
+
+aggregation:
+  # Aggregation frequency
+  # Options:
+  #   - '15m'  : 15-minute intervals (GDELT native, most granular)
+  #   - '1h'   : Hourly aggregation
+  #   - '4h'   : 4-hour aggregation
+  #   - '1d'   : Daily aggregation (recommended for training)
+  #   - '1w'   : Weekly aggregation
+  frequency: '1d'  # Daily aggregation (matches typical ticker frequency)
+  weight_by_word_count: true  # Weight sentiment by article length
+
+# BigQuery configuration
+# NOTE: Project ID and dataset ID are configured via environment variables
+# in .env (see .env.example): GCP_PROJECT_ID, BQ_DATASET
+bigquery:
+  table_name: 'gdelt_sentiment'
+  staging_table_name: 'gdelt_sentiment_staging'
+  partition_by: 'date'  # Day partitioning
+  
+# Data quality filters (applied during query)
+quality:
+  require_tone: true  # Skip articles without tone data
+  min_word_count: 0  # Minimum word count per article (0 = no filter)

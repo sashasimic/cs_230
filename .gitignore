@@ -22,6 +22,7 @@ wheels/
 
 # Virtual Environments
 venv/
+venv312/
 env/
 ENV/
 .venv/
@@ -41,13 +42,24 @@ ENV/
 data/raw/*
 data/processed/*
 data/dummy/*
-!data/**/.gitkeep
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/dummy/.gitkeep
+
+# Versioned datasets (uploaded to GCS, tracked in datasets_registry.yaml)
+data/datasets/
+data/datasets/*
+data/datasets/**/*
 
 # Logs and outputs
 logs/**/*
 !logs/.gitkeep
 !logs/**/.gitkeep
 *.log
+
+# TensorBoard logs
+logs/tensorboard/
+logs/tft/
 
 # Model artifacts
 checkpoints/**/*
@@ -56,6 +68,10 @@ models/**/*.h5
 models/**/*.keras
 models/**/*.pb
 models/**/*.ckpt
+models/**/*.pt
+models/**/*.pth
+models/**/*.safetensors
+models/**/*.onnx
 !models/__init__.py
 !models/model_factory.py
 
@@ -76,6 +92,8 @@ credentials/  # GCP service account keys
 *.tmp
 *.bak
 .cache/
+temp/
+
 
 # OS
 Thumbs.db

@@ -1,0 +1,458 @@
+# Temporal Fusion Transformer Configuration
+# Inflation Prediction - Multi-Horizon Quantile Forecasting
+
+# Data Configuration
+data:
+  # ============================================================
+  # TICKER DATA SOURCE & FEATURE GROUPS
+  # ============================================================
+  # All tickers loaded from BigQuery (Polygon.io)
+  # EXACT MATCH TO DECODER TRANSFORMER (27 tickers)
+  # Commented out 5 tickers not in decoder: BNO, UGA, UNG, CORN, CANE
+  tickers:
+    - SPY      # S&P 500
+    - QQQ      # Nasdaq 100
+    - IWM      # Russell 2000
+    - RSP      # Equal-Weight S&P 500
+    - XLF      # Financials
+    - XLI      # Industrials
+    - XLY      # Consumer Discretionary
+    - XLK      # Technology
+    - XLE      # Energy
+    - XLB      # Materials
+    - XLP      # Consumer Staples
+    - XLV      # Health Care
+    - XLU      # Utilities
+    - XLRE     # Real Estate
+    - TLT      # 20Y Treasury
+    - IEF      # 7-10Y Treasury
+    - TIP      # TIPS
+    - SHY      # 1-3Y Treasury
+    - LQD      # Investment Grade Bonds
+    - HYG      # High Yield Bonds
+    - UUP      # US Dollar Index
+    - DBC      # Commodities Index
+    - USO      # Crude Oil
+    # - BNO      # Brent Oil (not in decoder)
+    # - UGA      # Gasoline (not in decoder)
+    # - UNG      # Natural Gas (not in decoder)
+    - GLD      # Gold
+    - DBA      # Agriculture ETF
+    # - RJA      # Agriculture ETF (used ONLY for target basket, not as input feature)
+    - WEAT     # Wheat
+    - SOYB     # Soybean
+    - CORN     # Corn (not in decoder)
+    - CANE     # Sugar (not in decoder)
+  
+  # Ticker grouping - Organize tickers into macro categories
+  ticker_groups:
+    equity_largecap:
+      tickers: [SPY, QQQ, RSP, IWM]
+      description: "Large cap indices - economic bellwether"
+    
+    sectors_early_cycle:
+      tickers: [XLF, XLI]
+      description: "Financials & Industrials - expansion leaders"
+    
+    sectors_cyclical_growth:
+      tickers: [XLY, XLK]
+      description: "Consumer Discretionary & Tech - growth phase"
+    
+    sectors_inflation_sensitive:
+      tickers: [XLE, XLB]
+      description: "Energy & Materials - cost-push inflation"
+    
+    sectors_defensive:
+      tickers: [XLP, XLV, XLU, XLRE]
+      description: "Staples, Healthcare, Utilities, Real Estate"
+    
+    rates:
+      tickers: [TLT, IEF, TIP, SHY]
+      description: "Treasury yields - inflation expectations"
+    
+    credit:
+      tickers: [LQD, HYG]
+      description: "Corporate credit - credit cycle"
+    
+    dollar:
+      tickers: [UUP]
+      description: "US Dollar - imported inflation valve"
+    
+    commodities_energy:
+      tickers: [DBC, USO, BNO, UGA, UNG, GLD]
+      description: "Energy & commodities - direct inflation drivers"
+    
+    agriculture:
+      tickers: [DBA, WEAT, SOYB, CORN, CANE]  # Comprehensive agriculture basket
+      description: "Food commodities - comprehensive CPI food inflation basket"
+  
+  # ============================================================
+  # TARGET CONFIGURATION
+  # ============================================================
+  # Defines which ticker group and how to aggregate for Y labels
+  target:
+    group: agriculture              # Which ticker_group to predict
+    basket_tickers: [DBA, WEAT, SOYB, CORN, CANE]  # Comprehensive agriculture basket (5 tickers)
+    aggregation: mean               # Equal-weighted via mean of percentage returns
+    feature: close                  # Which feature: close, sma_50, etc.
+  
+  # ============================================================
+  # DATA AUGMENTATION CONFIGURATION
+  # ============================================================
+  # Which ticker groups to use for creating training variants
+  # DISABLED: No augmentation - Y is always agriculture basket
+  # ticker_augment_groups: [agriculture]  # DISABLED - no ticker variants
+  
+  # Shared frequency for all tickers
+  frequency: 'daily'
+  
+  # Shared raw OHLCV features (reduced set - removed open/high/low)
+  ticker_raw_features:
+    - close
+    - volume
+  
+  # Shared technical indicators (synthetic features) for all tickers
+  ticker_synthetic_features:
+      # - returns_5      # 5-period % return  
+      # - log_returns    # Log return
+      # - volatility_20  # Rolling std of returns (20-period)
+      # # - atr_14         # Average True Range (MISSING DATA)
+      # - momentum_5     # Price momentum (5-period)
+      # - momentum_10    # Price momentum (10-period)
+      # # - roc_5          # Rate of Change % (5-period) (EXCLUDED)
+      # # - roc_10         # Rate of Change % (10-period) (EXCLUDED)
+      # - volume_ma_5    # Volume moving average (5-period)
+      # - volume_ma_10   # Volume moving average (10-period)
+      # - volume_ratio   # Volume / volume_ma_10 (volume strength)
+      # # - obv            # On-Balance Volume (MISSING DATA)
+      # - high_low_ratio # Daily price range ratio
+      # - bb_upper_20    # Bollinger Band upper
+      # - bb_middle_20   # Bollinger Band middle
+      # - bb_lower_20    # Bollinger Band lower
+      # - bb_width       # Bollinger Band width
+      # - sma_10
+      # Removed: sma_20 (redundant with bb_middle_20)
+      - sma_50
+      - sma_200
+      # - ema_12         # Exponential Moving Average (12-period) (MISSING DATA)
+      # - ema_26         # Exponential Moving Average (26-period) (MISSING DATA)
+      # - macd           # MACD line (MISSING DATA)
+      # - macd_signal    # MACD signal line (MISSING DATA)
+      # - macd_hist      # MACD histogram (MISSING DATA)
+
+  # ============================================================
+  # TICKER GROUP FEATURES
+  # ============================================================
+  # Aggregates per-ticker data into compact group-level signals
+  # These features are computed for each ticker group (5 features × 9 groups = 45 features)
+  ticker_group_features:
+      - ret_mean          # Mean return (basket return)
+      - ret_std           # Return dispersion (agreement/disagreement)  
+      - trend50_mean      # Average % above 50-day SMA
+      - breadth_above50   # Fraction above 50-day SMA
+      - vol_rel_mean      # Relative volume vs 60-day baseline
+  
+  # ============================================================
+  # GDELT SENTIMENT DATA SOURCE (GDELT GKG → BigQuery)
+  # ============================================================
+  gdelt:
+    enabled: true  # Disable GDELT sentiment features (v20a: no sentiment)
+    frequency: '1d'  # Must match what's stored in BigQuery (use '1d' not 'daily')
+    
+    # Topic groups to load (references topic_group_id from gdelt.yaml)
+    # You can specify one or multiple topic groups
+    # Examples:
+    #   - Single: ['inflation_prices']
+    #   - Multiple: ['inflation_prices', 'fed_policy', 'commodities']
+    topic_groups:
+      - 'inflation_prices'  # Load only inflation-related sentiment
+    
+    # Sentiment features
+    features:
+      - weighted_avg_tone       # Primary sentiment (-10 to +10)
+      - weighted_avg_polarity   # Sentiment strength/intensity
+      - num_articles            # Article volume (media attention)
+      - num_sources             # Source diversity
+    
+    # Feature engineering
+    normalize_counts: true      # Normalize article/source counts (log1p transform)
+    include_lags: true          # Include lagged sentiment (t-1, t-2, etc.)
+    lag_periods: [1, 7, 30]     # 1 day, 1 week, 1 month ago (for daily frequency)
+  
+  # ============================================================
+  # GENERAL DATA CONFIGURATION
+  # ============================================================
+  # Date range for training data (EXACT MATCH TO DECODER V1)
+  start_date: '2020-05-01'  # Match decoder v1 for fair baseline
+  end_date: '2025-10-22'    # Match decoder v1 for fair baseline
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+  
+  # Time series parameters
+  lookback_window: 192        # 192 days lookback
+  prediction_horizons: [7, 14, 28]  # EXACT MATCH to decoder transformer (was [7,14,30])
+  
+  # Normalization
+  normalize: true
+  normalization_method: 'standard'  # 'standard' or 'minmax'
+  
+  # Weekend handling (for daily frequency)
+  skip_weekends: true  # Remove Saturday/Sunday from dataset (markets closed)
+  
+  # Forward filling for missing values
+  forward_fill:
+    enabled: true  # Fill missing values with last known value
+    log_stats: true  # Log detailed statistics about forward filling
+    max_fill_limit: 5  # Maximum consecutive periods to forward fill (prevents stale data)
+  
+  # ============================================================
+  # DATA AUGMENTATION
+  # ============================================================
+  # Strategy: Create N samples per date by varying augmentation group tickers
+  # Groups to augment are specified in data.ticker_augment_groups
+  augmentation:
+    enabled: false   # DISABLED - Y is always agriculture basket, no augmentation
+    seed: 42
+
+# Model Architecture
+model:
+  type: tft           # Model variant (tft or tft-augmented)
+  
+  # Feature configuration
+  # feature_type: 'group_signals'  # COMMENTED: Using individual ticker features instead
+  feature_type: 'individual'  # Use individual ticker features (no aggregation)
+  
+  # Time-varying features for TFT Variable Selection Network
+  # NOTE: With 'individual' mode, all ticker features are preserved (~170 features)
+  # Actual feature list is loaded from data; see data/processed/feature_names.txt after generation
+  # For documentation purposes, key feature types include:
+  #   - close_TICKER, volume_TICKER, sma_50_TICKER, sma_200_TICKER for each ticker
+  #   - target_basket_close
+  #   - Time features (hour, day, month cyclical encodings)
+  time_varying_unknown: []  # Loaded dynamically from data (~170 individual ticker features)
+  
+  # ========== GROUPED FEATURES CONFIG (COMMENTED FOR LATER) ==========
+  # Uncomment below and set feature_type: 'group_signals' to use grouped features
+  # time_varying_unknown:
+  #   # 10 ticker groups × 5 signals each = 50 features
+  #   - equity_largecap_ret_mean
+  #   - equity_largecap_ret_std
+  #   - equity_largecap_trend50_mean
+  #   - equity_largecap_breadth_above50
+  #   - equity_largecap_vol_rel_mean
+  #   - sectors_early_cycle_ret_mean
+  #   - sectors_early_cycle_ret_std
+  #   - sectors_early_cycle_trend50_mean
+  #   - sectors_early_cycle_breadth_above50
+  #   - sectors_early_cycle_vol_rel_mean
+  #   - sectors_cyclical_growth_ret_mean
+  #   - sectors_cyclical_growth_ret_std
+  #   - sectors_cyclical_growth_trend50_mean
+  #   - sectors_cyclical_growth_breadth_above50
+  #   - sectors_cyclical_growth_vol_rel_mean
+  #   - sectors_inflation_sensitive_ret_mean
+  #   - sectors_inflation_sensitive_ret_std
+  #   - sectors_inflation_sensitive_trend50_mean
+  #   - sectors_inflation_sensitive_breadth_above50
+  #   - sectors_inflation_sensitive_vol_rel_mean
+  #   - sectors_defensive_ret_mean
+  #   - sectors_defensive_ret_std
+  #   - sectors_defensive_trend50_mean
+  #   - sectors_defensive_breadth_above50
+  #   - sectors_defensive_vol_rel_mean
+  #   - rates_ret_mean
+  #   - rates_ret_std
+  #   - rates_trend50_mean
+  #   - rates_breadth_above50
+  #   - rates_vol_rel_mean
+  #   - credit_ret_mean
+  #   - credit_ret_std
+  #   - credit_trend50_mean
+  #   - credit_breadth_above50
+  #   - credit_vol_rel_mean
+  #   - dollar_ret_mean
+  #   - dollar_ret_std
+  #   - dollar_trend50_mean
+  #   - dollar_breadth_above50
+  #   - dollar_vol_rel_mean
+  #   - commodities_energy_ret_mean
+  #   - commodities_energy_ret_std
+  #   - commodities_energy_trend50_mean
+  #   - commodities_energy_breadth_above50
+  #   - commodities_energy_vol_rel_mean
+  #   - agriculture_ret_mean
+  #   - agriculture_ret_std
+  #   - agriculture_trend50_mean
+  #   - agriculture_breadth_above50
+  #   - agriculture_vol_rel_mean
+  #   # Augmentation context (4 features for current ticker)
+  #   - close_inflation
+  #   - volume_inflation
+  #   - sma_50_inflation
+  #   - sma_200_inflation
+  #   # Target basket (for context)
+  #   - target_basket_close
+  # ================================================================
+  
+  # SIMPLIFIED TIME FEATURES (match decoder exactly)
+  # Removed: day_of_week, day_of_month, month, day_sin, day_cos (5 features)
+  # Kept: month_sin, month_cos, is_weekend (3 features, matches decoder)
+  time_varying_known:
+    - month_sin
+    - month_cos
+    - is_weekend
+
+  hidden_size: 128   # Architecture components (granular control)
+  # Variable selection network (VSN)
+  use_variable_selection: false  # Enable VSN for feature selection
+  
+  use_lstm: true                # Enable LSTM for sequential processing
+  lstm_layers: 1                 # Number of stacked LSTM layers (1 or 2 recommended)
+  use_static_enrichment: false   # DISABLE: Blocks gradients before attention
+  use_position_wise_grn: false   # Disable GRN - test pure baseline on augmented data
+  
+  # Attention configuration
+  attention_heads: 8
+  attention_layers: 2            # Single layer - prevent gradient vanishing
+  
+  dropout: 0.45      # Match decoder transformer's dropout
+  
+  # Static feature embeddings (for ticker and category)
+  static_embedding_dim: 32  # Embedding size for static features (reduced from 32)
+
+  # Quantile prediction
+  quantiles: [0.5]            # Start with median only (reduce to regression task)
+
+  # Static features (DISABLED - match decoder which has no static features)
+  static_features: []  # Empty - no static features to match decoder
+  
+  # Time-varying known features (future known)
+  # EXACT MATCH TO DECODER: only 3 time features (removed day_of_week, day_of_month, month, day_sin, day_cos)
+  time_varying_known:
+    - month_sin       # Cyclical month encoding
+    - month_cos
+    - is_weekend      # Binary weekend indicator
+  
+  # Time-varying unknown features (past-only, not known in future)
+  # NOTE: Features are dynamically generated by the data loader based on:
+  #   1. Group-level signals (data.ticker_group_features × data.ticker_groups)
+  #      → 50 features (10 groups × 5 signals each)
+  #   2. Time encodings (month_sin, month_cos, is_weekend, hour, day_of_week, etc.)
+  #      → ~7 features
+  #   3. Target group tickers for augmentation (close_inflation, volume_inflation, etc.)
+  #      → 4 features per augmented ticker
+  #   4. GDELT sentiment (if use_gdelt=true): weighted_avg_tone, polarity, articles, sources, lags
+  #      → ~7 features
+  #
+  # Final feature count: ~65-70 features (vs 123 with per-ticker approach)
+  # See data/processed/feature_names.txt after dataset generation for actual feature list.
+
+# Training Configuration
+training:
+  # Optimization
+  batch_size: 64    # Match decoder transformer
+  epochs: 200       # Match decoder transformer (was 200)
+  learning_rate: 0.00005  # Match decoder transformer exactly
+  optimizer: 'adam'
+  weight_decay: 0.02      # Match decoder transformer
+  gradient_clip_norm: 1.0 # Match decoder transformer
+  
+  # Directional loss (for trading alignment)
+  use_directional_loss: false # Disable initially (focus on main regression)
+  wrong_direction_weight: 2.0  # Reduce penalty when enabled later
+  
+  # Learning rate schedule
+  lr_scheduler:
+    enabled: true
+    type: 'reduce_on_plateau'
+    factor: 0.5
+    patience: 5
+    min_lr: 0.00001
+  
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 20  # Match decoder transformer
+    monitor: 'val_loss'
+    mode: 'min'
+  
+  # Loss function
+  loss: 'mse'  # MSE to match decoder transformer (was quantile)
+  
+  # Gradient clipping
+  gradient_clip_val: 1.0
+  
+  # Checkpointing
+  # Note: During training, checkpoints are saved to checkpoints/tft/
+  #       At the end, the best checkpoint is copied to models/tft/tft_best.pt
+  checkpoint:
+    enabled: true
+    save_top_k: 3           # Keep top 3 best checkpoints (in checkpoints/tft/)
+    monitor: 'val_loss'     # Metric to monitor
+    mode: 'min'             # 'min' for loss, 'max' for accuracy
+    dirpath: 'checkpoints/tft'  # Intermediate checkpoints directory
+
+# Evaluation Configuration
+evaluation:
+  # Metrics to track
+  metrics:
+    - 'mae'          # Mean Absolute Error
+    - 'rmse'         # Root Mean Squared Error
+    - 'mape'         # Mean Absolute Percentage Error
+    - 'quantile_loss'
+    - 'coverage'     # Quantile coverage (p10, p90)
+  
+  # Calibration check
+  calibration:
+    enabled: true
+    bins: 10
+
+# Inference Configuration
+inference:
+  # Batch prediction
+  batch_size: 256
+  
+  # Output format
+  output_format: 'dataframe'  # 'dataframe' or 'dict'
+  
+  # Save predictions
+  save_predictions: true
+  output_dir: 'temp/predictions'
+
+# BigQuery Configuration
+bigquery:
+  project_id: inflation-prediction-478715  # Aligned with decoder_transformer
+  dataset_id: 'raw_dataset'
+  
+  # Ticker data tables
+  ticker:
+    raw_table: 'raw_ohlcv'  # Template: raw_ohlcv_{ticker}_{frequency}
+    synthetic_table: 'synthetic_indicators'  # Template: synthetic_indicators_{ticker}_{frequency}
+  
+  # GDELT sentiment table
+  gdelt:
+    table: 'gdelt_sentiment'
+    frequency: '1d'
+
+# Logging and Monitoring
+logging:
+  log_level: 'INFO'
+  log_dir: 'logs/tft'
+  tensorboard: true  # Enable for Vertex AI integration
+  mlflow: false
+  
+  # Experiment tracking
+  experiment_name: 'inflation_tft_baseline'
+  run_name: null  # Auto-generated timestamp for parallel HP tuning runs
+                  # null = auto-generated timestamp (enables parallel runs)
+                  # Creates unique folder: models/tft/run_YYYYMMDD_HHMMSS/
+
+# Reproducibility
+seed: 42
+
+# Hardware
+hardware:
+  device: 'auto'  # 'auto', 'cpu', 'cuda', 'mps'
+  num_workers: 0  # Data loader workers (set to 0 for Docker to avoid shared memory issues)
+  pin_memory: false
